@@ -1163,9 +1163,11 @@ version = "0.1.0"
 dependencies = [
  "gitvista-core",
  "gitvista-git",
+ "libc",
  "notify",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",

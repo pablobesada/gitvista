@@ -13,13 +13,23 @@ GitVista has one active workspace and one active diff. Its application-independe
 
 ## Command contract
 
-The frontend has `open_workspace`, `close_workspace`, `refresh_workspace`, `add_repository`, `get_diff`, `load_diff_contents`, `get_preferences` and `save_preferences`. Workspace updates use a Tauri channel rather than broadcast JSON events. Every file request has an opaque `entryId`, comparison `mode` and monotonically increasing `requestId`.
+The frontend has `open_workspace`, `close_workspace`, `refresh_workspace`, `add_repository`, `get_diff`, `load_diff_contents`, `save_working_file`, `set_editor_active`, `exit_application`, `get_preferences` and `save_preferences`. Workspace updates use a Tauri channel rather than broadcast JSON events. Every file request has an opaque `entryId`, comparison `mode` and monotonically increasing `requestId`.
 
 Root tabs persist only an ordered `openedRoots` list and `lastRoot`. Legacy preferences restore their last root as a single tab. Canonical paths deduplicate aliases. Root transitions are serialized at the bridge and frontend session IDs reject obsolete events and diffs. Switching roots cancels the old watchers/jobs and clears snapshots, patches and mounted content; inactive tabs hold no Git state. `close_workspace` also disconnects IPC and invalidates the generation when the last tab closes. Preferences use a shared write lock around atomic replacement to serialize UI saves and native transitions.
 
 Modes are `total` (HEAD → working tree), `unstaged` (index → working tree), and `staged` (HEAD → index). A repository without HEAD has an empty original. Added/deleted sides are null. Conflicts are informational in v0.1.
 
 Tree presentation supports workspace folders and peer repository groups. Both layouts resolve the same comparison-specific native path ownership before applying search or per-repo untracked visibility, so hiding a child repo's untracked file cannot expose a duplicate parent entry. Presentation changes do not rescan Git. Layout and visibility settings are additive preferences with backward-compatible serde defaults; expansion keys are independent per workspace/layout. Untracked visibility is toggled inline at each repository row. Hidden-only repositories retain a header or folder skeleton so their toggle stays reachable. File activation and the visibility action use sibling buttons; toggling the eye never expands a folder or selects a file.
+
+## Full-file review and explicit editing
+
+`DiffView` controls changes/full scope and a lazy-loaded Pierre editor. CodeView owns hydration of mounted partial models and associated AST/layout caches. Complete models are constructed separately for additions, deletions and net-empty/metadata comparisons. Editing affects only the new side, retains one mounted item, one highlighter worker and a 50-entry history. No editor state is keyed or retained for inactive files. Dirty drafts remain mounted through status updates; navigation, root/comparison changes and exit go through a discard guard. Native close/exit requests are deferred while an editor is active.
+
+Identical versions have an explicit unchanged region so CodeView's hunk-based virtualizer gives them a nonzero height. Empty documents get a blank editable row while their underlying bytes remain empty. Content loading temporarily defers selected-file refreshes; a stale status revision gets one native retry under the same request identity without replacing the in-flight model. macOS's Quit accelerator uses a custom menu item to enter the same discard guard. Change navigation and the review copy button are suspended during editing; the editor owns ordinary navigation and ⌘C.
+
+Full content responses can carry an `EditVersion` for the current regular working file. The native token hashes bytes plus file identity/mtime/mode; it is paired with workspace generation. `save_working_file` resolves the opaque entry ID from the active native snapshot, holds root ownership through the bounded write, rechecks the disk token and writes via a temporary file in the same directory. Unix directory descriptors, `openat` with `O_NOFOLLOW`, and `renameat` prevent traversal through file/parent symlinks. Relative traversal and `.git` components are rejected. The adapter remains a read-only Git backend. Saving clears patch cache and schedules a selective status scan.
+
+The disk checks are optimistic concurrency control; another process writing in the narrow interval between the final check and rename cannot be atomically excluded by a generic filesystem API. Atomic replacement preserves permission mode, but does not promise inode identity or all extended metadata. Native tests cover stale versions, root changes, limits, path guards, CRLF preservation, executable mode, watcher reconciliation and unchanged Git index/config bytes.
 
 ## Invariants
 

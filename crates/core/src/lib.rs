@@ -200,6 +200,17 @@ pub struct FileContents {
 pub struct DiffContents {
     pub old_file: Option<FileContents>,
     pub new_file: Option<FileContents>,
+    #[serde(default)]
+    pub edit_version: Option<EditVersion>,
+    #[serde(default)]
+    pub edit_unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditVersion {
+    pub generation: u64,
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

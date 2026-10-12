@@ -3,5 +3,5 @@
   "identifier": "main",
   "description": "The GitVista review window",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-start-dragging", "dialog:allow-open", "clipboard-manager:allow-write-text", "window-state:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging", "dialog:allow-open", "clipboard-manager:allow-write-text", "clipboard-manager:allow-read-text", "window-state:default"]
 }

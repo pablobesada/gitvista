@@ -7,6 +7,7 @@ export type WorkspaceEvent = { type: 'reset'; snapshot: WorkspaceSnapshot } | { 
 export interface DiffResult { entryId: string; repoId: string; mode: DiffMode; patch: string; kind: 'text' | 'binary' | 'metadata' | 'conflict' | 'empty' | 'tooLarge'; message: string | null; oldPath: string | null; newPath: string; }
 export interface DiffResponse { requestId: number; generation: number; result: DiffResult; }
 export interface FileContents { name: string; contents: string; cacheKey: string; }
-export interface DiffContents { oldFile: FileContents | null; newFile: FileContents | null; }
+export interface EditVersion { generation: number; token: string; }
+export interface DiffContents { oldFile: FileContents | null; newFile: FileContents | null; editVersion?: EditVersion | null; editUnavailableReason?: string | null; }
 export type TreeView = 'folders' | 'repositories';
 export interface Preferences { recentRoots: string[]; openedRoots: string[]; extraRepositories: Record<string, string[]>; sidebarWidth: number; expandedPaths: Record<string, string[]>; lastRoot: string | null; treeView: TreeView; untrackedByRepo: Record<string, boolean>; }

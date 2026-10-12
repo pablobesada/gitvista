@@ -1,4 +1,4 @@
-import { parsePatchFiles, setCustomExtension } from '@pierre/diffs';
+import { hydratePartialDiff, parseDiffFromFile, parsePatchFiles, setCustomExtension } from '@pierre/diffs';
 import type { FileDiffMetadata, SelectedLineRange, SelectionSide } from '@pierre/diffs';
 import type { DiffContents, DiffResponse } from './types';
 
@@ -62,6 +62,43 @@ export function parseSelectedDiff(response: DiffResponse): FileDiffMetadata | nu
   const files = parsePatchFiles(response.result.patch, key, true).flatMap((patch) => patch.files);
   if (files.length !== 1) throw new Error(`Se esperaba un archivo en el diff; Git devolvió ${files.length}.`);
   return files[0];
+}
+
+/** Keep Git's alignment when hydrating; calculate only metadata-only comparisons. */
+export function completeDiff(model: FileDiffMetadata | null, contents: DiffContents): FileDiffMetadata {
+  if (!contents.oldFile && !contents.newFile) throw new Error('Ninguna versión del archivo está disponible.');
+  if (model?.isPartial && model.type !== 'rename-pure' && contents.oldFile && contents.newFile) {
+    validateLoadedContents(model, contents);
+    return hydratePartialDiff('merge', model, { oldFile: contents.oldFile, newFile: contents.newFile });
+  }
+  // Added files parsed from patches cannot be edited; complete models can.
+  const oldFile = contents.oldFile && contents.newFile ? { ...contents.oldFile, name: contents.newFile.name } : contents.oldFile;
+  // diff supports a runtime deadline; Pierre's nonabortable declaration omits it.
+  // A deadline failure throws and is surfaced rather than blocking on a huge diff.
+  const options = { context: 3, timeout: 200 };
+  const complete = parseDiffFromFile(oldFile, contents.newFile, options, true);
+  if (complete.hunks.length === 0) {
+    // Pierre virtualizes by hunk metrics; a comparison with identical contents
+    // otherwise has zero height. Seed an unchanged region, including a blank
+    // physical row for an empty document, without inventing a changed line.
+    if (contents.oldFile && !complete.deletionLines.length) complete.deletionLines = [''];
+    if (contents.newFile && !complete.additionLines.length) complete.additionLines = [''];
+    const oldCount = complete.deletionLines.length;
+    const newCount = complete.additionLines.length;
+    const count = Math.max(oldCount, newCount);
+    complete.hunks = [{
+      collapsedBefore: 0, additionStart: newCount ? 1 : 0, additionCount: newCount,
+      additionLines: 0, additionLineIndex: 0, deletionStart: oldCount ? 1 : 0,
+      deletionCount: oldCount, deletionLines: 0, deletionLineIndex: 0,
+      hunkContent: [{ type: 'context', lines: count, deletionLineIndex: 0, additionLineIndex: 0 }],
+      splitLineStart: 0, splitLineCount: count, unifiedLineStart: 0, unifiedLineCount: count,
+      noEOFCRDeletions: !!contents.oldFile?.contents && !contents.oldFile.contents.endsWith('\n'),
+      noEOFCRAdditions: !!contents.newFile?.contents && !contents.newFile.contents.endsWith('\n'),
+    }];
+    complete.splitLineCount = count;
+    complete.unifiedLineCount = count;
+  }
+  return complete;
 }
 
 /** Navigate to the change itself, rather than the context preceding the hunk. */

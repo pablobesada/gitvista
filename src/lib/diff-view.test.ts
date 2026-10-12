@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { hydratePartialDiff, parsePatchFiles } from '@pierre/diffs';
-import { changeTargets, contentsLinesText, nativeSelectionText, selectedLinesText, selectionFromContents, validateLoadedContents } from './diff-view';
+import { changeTargets, completeDiff, contentsLinesText, nativeSelectionText, selectedLinesText, selectionFromContents, validateLoadedContents } from './diff-view';
 
 const patch = `diff --git a/sample.es6 b/sample.es6
 index aaaaaaa..bbbbbbb 100644
@@ -18,6 +18,52 @@ index aaaaaaa..bbbbbbb 100644
  tail
 `;
 const model = () => parsePatchFiles(patch, 'fixture', true)[0].files[0];
+
+describe('complete file versions', () => {
+  it('shows both full versions even for a net-empty comparison', () => {
+    const file = { name: 'sample.es6', contents: 'first\r\nlast\r\n', cacheKey: 'empty' };
+    const diff = completeDiff(null, { oldFile: file, newFile: file });
+    expect(diff.isPartial).toBeFalsy();
+    expect(diff.deletionLines.join('')).toBe(file.contents);
+    expect(diff.additionLines.join('')).toBe(file.contents);
+    expect(diff.splitLineCount).toBeGreaterThan(0);
+    expect(diff.hunks.length).toBeGreaterThan(0);
+    expect(changeTargets(diff)).toEqual([]);
+  });
+  it('shows both sides of a pure rename as a split complete comparison', () => {
+    const diff = completeDiff(null, { oldFile: { name: 'old.es6', contents: 'same\n', cacheKey: 'old' }, newFile: { name: 'new.es6', contents: 'same\n', cacheKey: 'new' } });
+    expect(diff.type).not.toBe('rename-pure');
+    expect(diff.deletionLines.join('')).toBe('same\n');
+    expect(diff.additionLines.join('')).toBe('same\n');
+  });
+  it('retains the absent side for additions and deletions', () => {
+    const file = { name: 'sample.es6', contents: 'content\n', cacheKey: 'fixture' };
+    const added = completeDiff(null, { oldFile: null, newFile: file });
+    const deleted = completeDiff(null, { oldFile: file, newFile: null });
+    expect(added.type).toBe('new');
+    expect(added.additionLines.join('')).toBe(file.contents);
+    expect(deleted.type).toBe('deleted');
+    expect(deleted.deletionLines.join('')).toBe(file.contents);
+  });
+  it('rejects a comparison with neither side available', () => {
+    expect(() => completeDiff(null, { oldFile: null, newFile: null })).toThrow();
+  });
+  it('gives empty documents a renderable row without changing their bytes', () => {
+    const empty = { name: 'empty.es6', contents: '', cacheKey: 'empty-document' };
+    const diff = completeDiff(null, { oldFile: empty, newFile: empty });
+    expect(diff.splitLineCount).toBe(1);
+    expect(diff.deletionLines.join('')).toBe('');
+    expect(diff.additionLines.join('')).toBe('');
+    expect(changeTargets(diff)).toEqual([]);
+  });
+  it('retains no-final-newline metadata for identical full versions', () => {
+    const file = { name: 'sample.es6', contents: 'no final newline', cacheKey: 'no-eol' };
+    const diff = completeDiff(null, { oldFile: file, newFile: file });
+    expect(diff.hunks[0].noEOFCRDeletions).toBe(true);
+    expect(diff.hunks[0].noEOFCRAdditions).toBe(true);
+    expect(diff.additionLines.join('')).toBe(file.contents);
+  });
+});
 
 describe('copy from the Git diff model', () => {
   it('preserves tabs, blank lines, and the selected side without gutters', () => {

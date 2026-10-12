@@ -1,8 +1,9 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-import type { Preferences, WorkspaceEvent, WorkspaceSnapshot, DiffMode, DiffResponse, DiffContents } from './types';
-import { demoContents, demoDiff, demoWorkspace } from './demo';
+import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
+import type { Preferences, WorkspaceEvent, WorkspaceSnapshot, DiffMode, DiffResponse, DiffContents, EditVersion } from './types';
+import { demoContents, demoDiff, demoWorkspace, saveDemoContents } from './demo';
 
 export const isDesktop = isTauri();
 export const defaultPreferences: Preferences = { recentRoots: [], openedRoots: [], extraRepositories: {}, sidebarWidth: 280, expandedPaths: {}, lastRoot: null, treeView: 'folders', untrackedByRepo: {} };
@@ -77,9 +78,27 @@ export async function getDiff(entryId: string, mode: DiffMode, requestId: number
 }
 export async function loadDiffContents(entryId: string, mode: DiffMode, requestId: number): Promise<DiffContents> {
   if (isDesktop) return invoke('load_diff_contents', { entryId, mode, requestId });
-  return demoContents(entryId, mode);
+  return { ...demoContents(entryId, mode), editVersion: mode === 'staged' ? null : { generation: demoGeneration, token: 'preview' } };
+}
+export async function saveWorkingFile(entryId: string, version: EditVersion, contents: string): Promise<void> {
+  if (isDesktop) return invoke('save_working_file', { entryId, version, contents });
+  saveDemoContents(entryId, contents);
+}
+export async function setEditorActive(active: boolean): Promise<void> {
+  if (isDesktop) await invoke('set_editor_active', { active });
+}
+export async function onExitRequested(handler: () => void): Promise<() => void> {
+  if (isDesktop) return listen('gitvista:exit-requested', handler);
+  return () => {};
+}
+export async function exitApplication(): Promise<void> {
+  if (isDesktop) await invoke('exit_application');
 }
 export async function copyText(text: string): Promise<void> {
   if (isDesktop) return writeText(text);
   return navigator.clipboard.writeText(text);
+}
+export async function readClipboardText(): Promise<string> {
+  if (isDesktop) return (await readText()) ?? '';
+  return navigator.clipboard.readText();
 }

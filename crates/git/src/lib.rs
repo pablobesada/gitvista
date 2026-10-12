@@ -548,6 +548,8 @@ impl CliGit {
         Ok(DiffContents {
             old_file: self.read_side(repo, &old, old_name, control)?,
             new_file: self.read_side(repo, &new, entry.file_path(), control)?,
+            edit_version: None,
+            edit_unavailable_reason: None,
         })
     }
 

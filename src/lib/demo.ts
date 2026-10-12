@@ -1,4 +1,5 @@
 import type { ChangeEntry, DiffContents, DiffMode, DiffResult, Repository, WorkspaceSnapshot } from './types';
+import { createTwoFilesPatch } from 'diff';
 const paths = [
   ['.', 'package.json', 'M', 'M'],
   ['.', 'src/server.ts', '.', 'M'],
@@ -25,13 +26,16 @@ export function demoDiff(entryId: string, mode: DiffMode): DiffResult {
   const row = paths.find((p) => `${p[0]}:${p[1]}` === entryId) ?? paths[2];
   const path = row[1];
   const isPython = path.endsWith('.py');
-  const patch = isPython
+  let patch = isPython
     ? `diff --git a/${path} b/${path}\nindex aaaaaaa..bbbbbbb 100644\n--- a/${path}\n+++ b/${path}\n@@ -7,7 +7,7 @@ def configure_server(args):\n     configuration["instance"] = args.instance\n     configuration["workers"] = args.workers\n \n-    if args.template_backup is not None:\n+    if args.template_backup:\n         if args.skip_database_creation:\n             raise ValueError("template requires database creation")\n         configuration["backup"] = Path(args.template_backup)\n`
     : `diff --git a/${path} b/${path}\nindex aaaaaaa..bbbbbbb 100644\n--- a/${path}\n+++ b/${path}\n@@ -5,7 +5,7 @@ export class Customer {\n     }\n \n     getDisplayName() {\n-        return this.name;\n+        return \u0060\u0024{this.code} — \u0024{this.name}\u0060;\n     }\n \n     isActive() {\n`;
+  if (drafts.has(entryId)) patch = `diff --git a/${path} b/${path}\n${createTwoFilesPatch(`a/${path}`, `b/${path}`, isPython ? oldPython : oldJs, drafts.get(entryId)!, '', '', { context: 3 })}`;
   return { entryId, repoId: row[0], mode, patch, kind: 'text', message: null, oldPath: path, newPath: path };
 }
 export function demoContents(entryId: string, _mode: DiffMode): DiffContents {
   const isPython = entryId.endsWith('.py');
   const name = entryId.slice(entryId.indexOf(':') + 1);
-  return { oldFile: { name, contents: isPython ? oldPython : oldJs, cacheKey: `demo:${entryId}:old` }, newFile: { name, contents: isPython ? newPython : newJs, cacheKey: `demo:${entryId}:new` } };
+  return { oldFile: { name, contents: isPython ? oldPython : oldJs, cacheKey: `demo:${entryId}:old` }, newFile: { name, contents: drafts.get(entryId) ?? (isPython ? newPython : newJs), cacheKey: `demo:${entryId}:new:${drafts.get(entryId) ?? ''}` } };
 }
+const drafts = new Map<string, string>();
+export function saveDemoContents(entryId: string, contents: string) { drafts.set(entryId, contents); }

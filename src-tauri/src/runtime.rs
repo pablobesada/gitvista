@@ -26,6 +26,7 @@ struct Inner {
     diff: Mutex<(u64, Cancellation, u64)>,
     cache: Mutex<ByteLru<String, DiffResult>>,
     channel: Mutex<Option<Channel<WorkspaceEvent>>>,
+    editor_active: AtomicBool,
 }
 struct Data {
     root: Option<PathBuf>,
@@ -82,10 +83,17 @@ impl Runtime {
             diff: Mutex::new((0, Cancellation::new(), 0)),
             cache: Mutex::new(ByteLru::new(CACHE_BUDGET_BYTES)),
             channel: Mutex::new(None),
+            editor_active: AtomicBool::new(false),
         }))
     }
     pub fn preferences(&self) -> Preferences {
         self.0.preferences.lock().unwrap().clone()
+    }
+    pub fn editor_active(&self) -> bool {
+        self.0.editor_active.load(Ordering::Acquire)
+    }
+    pub fn set_editor_active(&self, active: bool) {
+        self.0.editor_active.store(active, Ordering::Release);
     }
     pub fn save_preferences(&self, mut preferences: Preferences) -> Result<(), String> {
         // Serialize atomic replacements: UI saves and root transitions can overlap.
@@ -718,7 +726,18 @@ impl Runtime {
         let token = control.clone();
         let contents = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            backend.contents(&repo, &entry, mode, &token)
+            let mut contents = backend.contents(&repo, &entry, mode, &token)?;
+            if mode == DiffMode::Staged {
+                contents.edit_unavailable_reason = Some("Preparado muestra el índice. Usá Total o Sin preparar para editar el archivo actual.".into());
+            } else if let Some(file) = &contents.new_file {
+                match crate::editor::inspect(&repo, &entry, &file.contents) {
+                    Ok(token) => contents.edit_version = Some(EditVersion { generation, token }),
+                    Err(reason) => contents.edit_unavailable_reason = Some(reason),
+                }
+            } else {
+                contents.edit_unavailable_reason = Some("La versión nueva no existe en disco.".into());
+            }
+            Ok::<_, String>(contents)
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -730,6 +749,48 @@ impl Runtime {
             return Err("El archivo cambió durante la lectura. Actualizá el diff.".into());
         }
         Ok(contents)
+    }
+    pub async fn save_file(
+        &self,
+        entry_id: String,
+        version: EditVersion,
+        contents: String,
+    ) -> Result<(), String> {
+        if contents.len() > CONTENT_LIMIT_BYTES {
+            return Err("El archivo supera el límite de 10 MiB.".into());
+        }
+        let permit = self
+            .0
+            .foreground
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?;
+        let runtime = self.clone();
+        let repo_id = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            // Hold workspace ownership through the explicit write, so switching roots
+            // cannot redirect a pending save. Filesystem version checks remain independent
+            // of status revisions: watcher refreshes must not invalidate an unchanged draft.
+            let data = runtime.0.data.lock().unwrap();
+            if data.generation != version.generation {
+                return Err("La raíz activa cambió; el borrador no se guardó.".into());
+            }
+            for state in data.repositories.values() {
+                if let Some(entry) = state.entries.iter().find(|entry| entry.id == entry_id) {
+                    crate::editor::save(&state.repository, entry, &version.token, &contents)?;
+                    return Ok(state.repository.id.clone());
+                }
+            }
+            Err::<String, String>(
+                "El archivo ya no está en la lista de cambios. Tu borrador se conserva.".into(),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        self.0.cache.lock().unwrap().clear();
+        self.spawn_scan(false, Some(HashSet::from([repo_id])));
+        Ok(())
     }
 }
 

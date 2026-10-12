@@ -5,7 +5,7 @@
   import Icon from './components/Icon.svelte';
   import RepoUntrackedToggle from './components/RepoUntrackedToggle.svelte';
   import RootTabs from './components/RootTabs.svelte';
-  import { addRepository, chooseRepository, chooseRoot, closeWorkspace, defaultPreferences, getDiff, getPreferences, isDesktop, loadDiffContents, openWorkspace, refreshWorkspace, savePreferences } from './lib/bridge';
+  import { addRepository, chooseRepository, chooseRoot, closeWorkspace, defaultPreferences, exitApplication, getDiff, getPreferences, isDesktop, loadDiffContents, onExitRequested, openWorkspace, refreshWorkspace, savePreferences } from './lib/bridge';
   import { canonicalizeTab, closeTab, restoreRoots } from './lib/workspace-tabs';
   import { allEntries, buildChangeTree, directoryPaths, hiddenUntrackedCount, isUntracked } from './lib/tree';
   import type { ChangeEntry, DiffContents, DiffMode, DiffResponse, Preferences, TreeView, WorkspaceEvent, WorkspaceSnapshot } from './lib/types';
@@ -26,10 +26,13 @@
   let toast = $state<string | null>(null);
   let opening = $state(false);
   let resizing = $state(false);
+  let editorActive = $state(false);
   let searchInput = $state<HTMLInputElement>();
-  let diffView = $state<{ nextHunk: (direction: 1 | -1) => void; copySelection: () => Promise<boolean> }>();
+  let diffView = $state<{ nextHunk: (direction: 1 | -1) => void; copySelection: () => Promise<boolean>; canLeave: () => Promise<boolean> }>();
   let changeTree = $state<{ focusSelected: () => void }>();
   let requestId = 0;
+  let readingContents = false;
+  let deferredDiff = false;
   let sessionId = 0;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let diffTimer: ReturnType<typeof setTimeout> | undefined;
@@ -66,12 +69,14 @@
   function expansionKey(root: string, view = preferences.treeView) {
     return view === 'folders' ? root : `${root}\0repositories`;
   }
-  function setTreeView(view: TreeView) {
+  async function setTreeView(view: TreeView) {
+    if (!await leaveEditor()) return;
     preferences.treeView = view;
     expanded = new Set(preferences.expandedPaths[expansionKey(snapshot?.root ?? '', view)] ?? []);
     persist();
   }
-  function setUntrackedVisibility(repoId: string, show: boolean) {
+  async function setUntrackedVisibility(repoId: string, show: boolean) {
+    if (!show && selected?.repoId === repoId && isUntracked(selected) && !await leaveEditor()) return;
     preferences.untrackedByRepo = { ...preferences.untrackedByRepo, [repoId]: show };
     if (!show && selected?.repoId === repoId && isUntracked(selected)) {
       ++requestId;
@@ -95,10 +100,20 @@
     if (snapshot) preferences.expandedPaths = { ...preferences.expandedPaths, [expansionKey(snapshot.root)]: [] };
     persist();
   }
-  function selectEntry(entry: ChangeEntry) { selected = entry; }
+  async function leaveEditor() { return !editorActive || await diffView?.canLeave() === true; }
+  async function selectEntry(entry: ChangeEntry) {
+    if (selected?.id === entry.id || !await leaveEditor()) return;
+    selected = entry;
+  }
+  async function setMode(next: DiffMode) {
+    if (next === mode || !await leaveEditor()) return;
+    mode = next;
+  }
 
   async function requestDiff() {
     clearTimeout(diffTimer);
+    if (readingContents) { deferredDiff = true; return; }
+    if (editorActive) return;
     if (!selected || !snapshot) return;
     const entryId = selected.id;
     const comparison = mode;
@@ -121,11 +136,34 @@
   async function loadContents(): Promise<DiffContents> {
     if (!response) throw new Error('Seleccioná un archivo para revelar su contexto.');
     const current = response;
-    return loadDiffContents(current.result.entryId, current.result.mode, current.requestId);
+    const currentSession = sessionId;
+    readingContents = true;
+    clearTimeout(diffTimer);
+    try { return await loadDiffContents(current.result.entryId, current.result.mode, current.requestId); }
+    catch (cause) {
+      if (currentSession !== sessionId || selected?.id !== current.result.entryId || mode !== current.result.mode) throw cause;
+      // Focus/watcher status revisions can advance between the patch and full
+      // content request. Retry once against a fresh patch; DiffView still checks
+      // the complete versions against its original alignment before editing.
+      // Keep the same foreground request identity and do not publish a response
+      // while its contents are loading: replacing it would restart hydration.
+      await getDiff(current.result.entryId, current.result.mode, current.requestId);
+      if (currentSession !== sessionId || selected?.id !== current.result.entryId || mode !== current.result.mode) throw cause;
+      return await loadDiffContents(current.result.entryId, current.result.mode, current.requestId);
+    } finally {
+      readingContents = false;
+      if (deferredDiff) { deferredDiff = false; queueDiff(); }
+    }
   }
   function queueDiff() {
     clearTimeout(diffTimer);
+    if (readingContents) { deferredDiff = true; return; }
+    if (editorActive) return;
     diffTimer = setTimeout(() => void requestDiff(), 100);
+  }
+  function editingChanged(active: boolean) {
+    editorActive = active;
+    if (active) clearTimeout(diffTimer);
   }
   function handleEvent(event: WorkspaceEvent) {
     if (event.type === 'reset') {
@@ -155,6 +193,7 @@
   async function openRoot(root: string) {
     recentMenu = false;
     if (snapshot?.root === root && !workspaceError) return;
+    if (!await leaveEditor()) return;
     preferences.openedRoots = restoreRoots(preferences.openedRoots, root);
     preferences.lastRoot = root;
     persist();
@@ -195,6 +234,7 @@
     }
   }
   async function closeRoot(root: string) {
+    if (root === snapshot?.root && !await leaveEditor()) return;
     const next = closeTab(preferences.openedRoots, snapshot?.root ?? null, root);
     preferences.openedRoots = next.roots;
     persist();
@@ -245,6 +285,7 @@
     } catch (error) { showToast(`No se pudo copiar la selección: ${String(error)}`); }
   }
   function keydown(event: KeyboardEvent) {
+    if (event.defaultPrevented) return;
     const command = event.metaKey || event.ctrlKey;
     if (command && event.key.toLowerCase() === 'o') { event.preventDefault(); void browseRoot(); }
     else if (command && event.key.toLowerCase() === 'p') { event.preventDefault(); searchInput?.focus(); searchInput?.select(); }
@@ -256,7 +297,7 @@
       const index = roots.indexOf(snapshot?.root ?? '');
       void openRoot(roots[(index + (event.key === 'PageDown' ? 1 : -1) + roots.length) % roots.length]);
     }
-    else if (event.key === 'F7') { event.preventDefault(); diffView?.nextHunk(event.shiftKey ? -1 : 1); }
+    else if (event.key === 'F7' && !editorActive) { event.preventDefault(); diffView?.nextHunk(event.shiftKey ? -1 : 1); }
     else if (event.altKey && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
       event.preventDefault();
       const index = visibleEntries.findIndex(entry => entry.id === selected?.id);
@@ -302,12 +343,32 @@
     else if (!id && visibleEntries.length) {
       // The desktop starts at the first changed path; preview opens the reference.
       selected = !isDesktop ? visibleEntries.find(entry => entry.path.endsWith('deployOppen.py')) ?? visibleEntries[0] : visibleEntries[0];
-    } else if (id && !snapshot?.scanning && !states.some(state => state.entries.some(entry => entry.id === id))) selected = null;
+    } else if (id && !editorActive && !snapshot?.scanning && !states.some(state => state.entries.some(entry => entry.id === id))) selected = null;
   });
-  $effect(() => { const id = selected?.id; mode; if (id) untrack(() => void requestDiff()); });
+  $effect(() => {
+    const id = selected?.id; mode;
+    untrack(() => {
+      if (id) void requestDiff();
+      else { ++requestId; clearTimeout(diffTimer); response = null; loadingDiff = false; diffError = null; }
+    });
+  });
 
   onMount(() => {
     let mounted = true;
+    let removeExitListener: (() => void) | undefined;
+    let exiting = false;
+    void onExitRequested(() => {
+      if (exiting) return;
+      exiting = true;
+      void (async () => {
+        try {
+          const canClose = diffView ? await diffView.canLeave() : !editorActive;
+          if (canClose) await exitApplication();
+        }
+        catch (error) { showToast(String(error)); }
+        finally { exiting = false; }
+      })();
+    }).then(remove => { if (mounted) removeExitListener = remove; else remove(); });
     void getPreferences().then(saved => {
       if (!mounted) return;
       preferences = { ...structuredClone(defaultPreferences), ...saved, sidebarWidth: Math.max(220, Math.min(520, saved.sidebarWidth || 280)) };
@@ -317,6 +378,7 @@
     }).catch(error => showToast(`No se pudieron cargar las preferencias: ${String(error)}`));
     return () => {
       mounted = false;
+      removeExitListener?.();
       ++sessionId;
       clearTimeout(saveTimer);
       clearTimeout(diffTimer);
@@ -377,18 +439,18 @@
             {#if selected}<span class="breadcrumb-file-icon"><Icon name="file" size={15} /></span>{#each pathParts as part, index}<span class:breadcrumb-current={index === pathParts.length - 1}>{part}</span>{#if index < pathParts.length - 1}<Icon name="chevron-right" size={11} />{/if}{/each}
             {:else}<span class="no-file-label">Seleccioná un archivo</span>{/if}
           </div>
-          <div class="diff-controls"><div class="comparison-switch" aria-label="Comparación">{#each modes as option}<button class:active={mode === option.value} aria-pressed={mode === option.value} title={option.title} onclick={() => mode = option.value}>{option.label}</button>{/each}</div><div class="diff-navigation"><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff} aria-label="Cambio anterior" title="Cambio anterior · ⇧F7" onclick={() => diffView?.nextHunk(-1)}><Icon name="chevron-up" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff} aria-label="Cambio siguiente" title="Cambio siguiente · F7" onclick={() => diffView?.nextHunk(1)}><Icon name="chevron-down" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff} aria-label="Copiar líneas seleccionadas" title="Copiar líneas seleccionadas" onclick={copySelection}><Icon name="copy" size={15} /></button></div></div>
+          <div class="diff-controls"><div class="comparison-switch" aria-label="Comparación">{#each modes as option}<button class:active={mode === option.value} aria-pressed={mode === option.value} title={option.title} onclick={() => setMode(option.value)}>{option.label}</button>{/each}</div><div class="diff-navigation"><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Cambio anterior" title="Cambio anterior · ⇧F7" onclick={() => diffView?.nextHunk(-1)}><Icon name="chevron-up" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Cambio siguiente" title="Cambio siguiente · F7" onclick={() => diffView?.nextHunk(1)}><Icon name="chevron-down" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Copiar líneas seleccionadas" title="Copiar líneas seleccionadas" onclick={copySelection}><Icon name="copy" size={15} /></button></div></div>
         </div>
-        <DiffView bind:this={diffView} {response} loading={loadingDiff} error={diffError} onLoadContents={loadContents} />
+        <DiffView bind:this={diffView} {response} loading={loadingDiff} error={diffError} onLoadContents={loadContents} onRefresh={() => requestDiff()} onEditingChange={editingChanged} />
       </main>
     </div>
-    <footer class="statusbar"><div class="status-left"><span class="status-indicator" class:busy={snapshot.scanning} class:stale={staleCount > 0 || !!workspaceError}></span>{#if workspaceError}<span class="status-error" title={workspaceError}>{workspaceError}</span>{:else if snapshot.scanning}<span>Consultando {snapshot.scannedCount}{totalCount ? ` de ${totalCount}` : ''} repositorios</span>{:else if staleCount}<span title={states.filter(state => state.error).map(state => `${state.repository.relativePath}: ${state.error}`).join('\n')}>{staleCount} repositorios sin actualizar</span>{:else}<span>{states.length} repositorios<span class="status-separator">·</span>{modeCount} archivos con cambios{#if hiddenCount}<span class="status-separator">·</span>{hiddenCount} sin seguimiento ocultos{/if}</span>{/if}{#if elapsedMs !== null && !snapshot.scanning}<span class="scan-time">{elapsedMs < 1000 ? `${Math.round(elapsedMs)} ms` : `${(elapsedMs / 1000).toFixed(1)} s`}</span>{/if}</div><div class="status-right">{#if currentRepo?.branch}<span><Icon name="branch" size={12} />{currentRepo.branch}</span><span class="status-separator">·</span>{/if}<span><Icon name="split" size={12} />Vista dividida</span><span class="status-separator">·</span><span>Solo lectura</span></div></footer>
+    <footer class="statusbar"><div class="status-left"><span class="status-indicator" class:busy={snapshot.scanning} class:stale={staleCount > 0 || !!workspaceError}></span>{#if workspaceError}<span class="status-error" title={workspaceError}>{workspaceError}</span>{:else if snapshot.scanning}<span>Consultando {snapshot.scannedCount}{totalCount ? ` de ${totalCount}` : ''} repositorios</span>{:else if staleCount}<span title={states.filter(state => state.error).map(state => `${state.repository.relativePath}: ${state.error}`).join('\n')}>{staleCount} repositorios sin actualizar</span>{:else}<span>{states.length} repositorios<span class="status-separator">·</span>{modeCount} archivos con cambios{#if hiddenCount}<span class="status-separator">·</span>{hiddenCount} sin seguimiento ocultos{/if}</span>{/if}{#if elapsedMs !== null && !snapshot.scanning}<span class="scan-time">{elapsedMs < 1000 ? `${Math.round(elapsedMs)} ms` : `${(elapsedMs / 1000).toFixed(1)} s`}</span>{/if}</div><div class="status-right">{#if currentRepo?.branch}<span><Icon name="branch" size={12} />{currentRepo.branch}</span><span class="status-separator">·</span>{/if}<span><Icon name="split" size={12} />Vista dividida</span><span class="status-separator">·</span><span>{editorActive ? "Editando archivo actual" : "Revisión"}</span></div></footer>
   {:else}
     <main class="welcome-screen">
       <div class="welcome-art" aria-hidden="true"><div class="welcome-pane old"><span></span><span></span><span class="removed"></span><span></span><span></span></div><div class="welcome-art-divider"></div><div class="welcome-pane new"><span></span><span></span><span class="added"></span><span></span><span></span></div><span class="welcome-app-icon"><Icon name="split" size={27} /></span></div>
       <div class="welcome-eyebrow">GITVISTA</div><h1>Tus cambios,<br /><span>sin distracciones.</span></h1><p>Todos tus repositorios, un solo árbol.<br />Una vista clara de lo que cambió.</p><button class="primary-button" onclick={browseRoot}><Icon name="folder-open" size={17} />Abrir carpeta de proyecto<kbd>⌘O</kbd></button>
       {#if preferences.recentRoots.length}<div class="welcome-recents"><span>RECIENTES</span>{#each preferences.recentRoots.slice(0, 3) as root}<button onclick={() => openRoot(root)} title={root}><Icon name="clock" size={14} /><span>{root.split('/').filter(Boolean).pop()}</span><small>{root}</small><Icon name="chevron-right" size={14} /></button>{/each}</div>{/if}
-      <span class="welcome-footnote">Ligero por diseño. Tus archivos permanecen intactos.</span>
+      <span class="welcome-footnote">Ligero por diseño. Revisá cambios y editá cuando lo necesites.</span>
     </main>
   {/if}
   {#if toast}<div class="toast" role="status"><Icon name="check" size={16} />{toast}</div>{/if}

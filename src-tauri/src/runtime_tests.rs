@@ -301,6 +301,100 @@ async fn closing_last_root_releases_its_events_and_entries_and_allows_reopening(
 }
 
 #[tokio::test]
+async fn explicit_save_checks_disk_version_and_root_and_never_writes_the_index() {
+    let fixture = TempDir::new().unwrap();
+    let root = repository(&fixture.path().join("project"));
+    let runtime = Runtime::new(fixture.path().join("config/preferences.json"));
+    let (channel, mut events) = Events::channel();
+    let opened = runtime
+        .open(root.to_string_lossy().into_owned(), channel)
+        .await
+        .unwrap();
+    events.snapshot = Some(opened);
+    events.done().await;
+    events.drain_for(Duration::from_millis(700)).await;
+    let entry = events.repositories()[0].entries[0].id.clone();
+    let index = fs::read(root.join(".git/index")).unwrap();
+    let config = fs::read(root.join(".git/config")).unwrap();
+    runtime
+        .diff(entry.clone(), DiffMode::Total, 700)
+        .await
+        .unwrap();
+    let version = runtime
+        .contents(entry.clone(), DiffMode::Total, 700)
+        .await
+        .unwrap()
+        .edit_version
+        .unwrap();
+    fs::write(root.join("change.txt"), "external edit\n").unwrap();
+    assert!(runtime
+        .save_file(entry.clone(), version, "draft\n".into())
+        .await
+        .is_err());
+    assert_eq!(
+        fs::read(root.join("change.txt")).unwrap(),
+        b"external edit\n"
+    );
+    events.drain_for(Duration::from_millis(700)).await;
+    runtime
+        .diff(entry.clone(), DiffMode::Staged, 701)
+        .await
+        .unwrap();
+    assert!(runtime
+        .contents(entry.clone(), DiffMode::Staged, 701)
+        .await
+        .unwrap()
+        .edit_version
+        .is_none());
+    runtime
+        .diff(entry.clone(), DiffMode::Total, 702)
+        .await
+        .unwrap();
+    let version = runtime
+        .contents(entry.clone(), DiffMode::Total, 702)
+        .await
+        .unwrap()
+        .edit_version
+        .unwrap();
+    runtime
+        .save_file(
+            entry.clone(),
+            version.clone(),
+            "saved by GitVista\r\n".into(),
+        )
+        .await
+        .unwrap();
+    events.done().await;
+    assert_eq!(
+        fs::read(root.join("change.txt")).unwrap(),
+        b"saved by GitVista\r\n"
+    );
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(root.join(".git/config")).unwrap(), config);
+    assert!(runtime
+        .diff(entry.clone(), DiffMode::Total, 703)
+        .await
+        .unwrap()
+        .result
+        .patch
+        .contains("saved by GitVista"));
+    let other = repository(&fixture.path().join("other"));
+    let (channel, _) = Events::channel();
+    runtime
+        .open(other.to_string_lossy().into_owned(), channel)
+        .await
+        .unwrap();
+    assert!(runtime
+        .save_file(entry, version, "wrong root\n".into())
+        .await
+        .is_err());
+    assert_eq!(
+        fs::read(root.join("change.txt")).unwrap(),
+        b"saved by GitVista\r\n"
+    );
+}
+
+#[tokio::test]
 async fn progressive_scan_and_incremental_watch_keep_the_entire_workspace() {
     let fixture = TempDir::new().unwrap();
     let root = fixture.path().join("project");

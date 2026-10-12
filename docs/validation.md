@@ -4,7 +4,7 @@ Reference machine: Apple Silicon, 32 GiB RAM, macOS 26.6, local SSD, Apple Git 2
 
 ## Correctness
 
-- Type checking: zero errors and warnings; Clippy passes with warnings denied. All 34 Rust tests and 24 frontend tests pass.
+- Type checking: zero errors and warnings; Clippy passes with warnings denied. All 38 Rust tests and 30 frontend tests pass.
 - Frontend tests: tree discovery/merging, comparison filtering, 100,000 sibling rows, gitlink metadata, duplicate path ownership, distinct native names with identical display labels, selection/copy, native substrings, context hydration and external-change rejection.
 - Rust tests: real Git fixtures for additions/deletions/renames, staged+unstaged cancellation, unborn HEAD, intent-to-add, submodules, worktrees/gitfiles, odd/non-UTF-8 paths, unreadable discovery subtrees, symlinks, branch-conditional filters, limits and child-process cancellation.
 - Runtime integration: actual Tauri IPC serialization and FSEvents; selective updates retain unaffected repos, explicit excluded-folder repos are watched, writes during baseline are reconciled, and root switching cancels old work.
@@ -45,6 +45,16 @@ The final interaction uses inline eye buttons instead of a picker. Browser QA co
 Four frontend regression tests cover legacy/CLI restoration, deduplication of canonical aliases, closing inactive tabs and choosing the adjacent active tab. Native integration closes a root during a pending refresh, rejects its cached entry, verifies no subsequent events, then reopens it and observes edits made while closed. Preferences round-trip the opened roots without losing existing layout, visibility or expansion settings.
 
 Browser QA verified adding two roots, switching tabs, closing inactive and last tabs, returning to the welcome screen, keyboard arrow navigation, and restoring both tabs plus the active root after reload. The optimized native bundle displayed `oojs` and `oojs3` as separate tabs, switched between them using actual Git data, and persisted both paths. Existing sidebar width and per-repository settings were retained. Only the selected root has watchers or Git snapshots; previous performance baselines were not remeasured for this UI change.
+
+## Full-file review and editing
+
+Frontend tests cover complete versions for net-empty comparisons, pure renames, additions/deletions, empty documents, no-final-newline metadata and unavailable sides. Existing context validation and copying tests remain green. Browser QA exercised complete old/new rendering, editing the new side, protected comparison navigation, discarding a draft and saving to the preview model. The original source text stayed unchanged.
+
+Native tests save only isolated fixture files. They verify disk-version rejection, workspace-generation rejection, UTF-8/size and native-path guards, symlink rejection, atomic replacement, CRLF and executable-mode preservation, temporary-file cleanup, cache invalidation and selective watcher updates. Git index/config bytes are checked around explicit saves. The release app's ⌘S also wrote an actual test file while its HEAD version stayed unchanged. No user checkout was edited during QA.
+
+Final native macOS QA displayed both complete versions for a net-empty Total comparison and edited an initially empty, untracked file. ⌘Q displayed the dirty-draft dialog; choosing to continue retained the exact draft, and ⌘S saved it without changing index/config checksums or leaving temporary files. The test root was closed afterward and the application returned to `oojs`.
+
+The new scope and editor retain virtualization and existing budgets. Full-view/editor RAM, startup and scrolling percentiles have not been rebenchmarked; the earlier release measurements describe the review MVP.
 
 ## Remaining performance characterization
 

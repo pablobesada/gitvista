@@ -1,6 +1,6 @@
 # Next increments
 
-## Diff scope selector
+## Diff scope selector and working-file editing — implemented
 
 Add a compact **Cambios / Archivo completo** selector in the diff header so users can switch directly between relevant changed hunks and the complete selected file.
 
@@ -10,4 +10,4 @@ Add a compact **Cambios / Archivo completo** selector in the diff header so user
 - Switching scope should preserve the selected file and the current change when possible.
 - Apply to Total, Unstaged and Staged comparisons. Keep it behind `DiffView` and retain one mounted diff.
 
-Requested on 2026-10-12; deferred until after publishing the current MVP.
+Requested and implemented on 2026-10-12. The new side can also be edited explicitly in Total and Unstaged comparisons, with guarded saving and cancellation. Prepared/index and old versions remain read-only.

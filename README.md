@@ -1,6 +1,6 @@
 # GitVista
 
-A focused desktop viewer for changes across a Git project and its nested repositories. Built with Rust, Tauri 2, Svelte 5 and a virtualized split diff. The MVP is read-only: no staging, commits, checkout or editing.
+A focused desktop viewer for changes across a Git project and its nested repositories. Built with Rust, Tauri 2, Svelte 5 and a virtualized split diff. Git operations are read-only: no staging, commits or checkout. Editing the selected current working file is an explicit, separate action.
 
 ## Run
 
@@ -29,6 +29,10 @@ Root folders appear as tabs in the top bar. Use **+** or **⌘O** to add one, cl
 Choose **Carpetas** to preserve the workspace folder hierarchy or **Repositorios** to place each repository at the same level, with its own local file tree. The root repo appears first. Each repository row has a small eye toggle: an open eye shows its untracked files and folders, while a crossed-out eye hides them. The control also appears beside the root repo in folder view. Repository rows remain available when their untracked entries are hidden, so the same eye can restore them. These controls use the already loaded snapshot, keep tracked changes visible and remember their settings. Folder expansion is saved separately for each layout; hidden-only results are labeled as hidden rather than clean.
 
 Select a file to see the original on the left and the updated version on the right. The comparison selector supports Total (HEAD → working tree), Unstaged (index → working tree) and Staged (HEAD → index). Total may be empty when staged and unstaged changes cancel; the file stays visible so the other comparisons can be inspected.
+
+Choose **Cambios / Archivo completo** above the diff to show changed blocks or both complete versions. Full contents are loaded lazily and retain split alignment and virtualization. Click **Editar versión nueva** to edit the right column, then **Guardar** or **⌘S** to save to disk. The original left column stays read-only. **Cancelar** discards the edit session; unsaved drafts require confirmation before navigating, switching roots/comparisons or quitting. External refreshes preserve the draft, and saving checks the original disk version so concurrent edits are not silently replaced.
+
+Editing applies to **Total** and **Sin preparar**, where the right column is the current working file. **Preparado** shows the index and remains read-only. UTF-8 regular files up to 10 MiB are supported; missing, binary, filtered and symlink files cannot be edited. Saving uses the file's native path, replaces it atomically and preserves its permission mode. It never stages changes or modifies Git's index/configuration. Undo and redo use the editor's standard shortcuts; the active editor has a bounded 50-entry undo history and is released when leaving the file.
 
 Use **F7 / Shift+F7** to move between changes, **⌘R** to reconcile the project, and click a hunk separator to reveal more context. Select text within either column or drag through line numbers to select a range; **⌘C** copies only that side, excluding gutter numbers. Roots, expanded folders, sidebar width and window geometry are remembered in application settings.
 
