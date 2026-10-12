@@ -1,0 +1,13 @@
+[package]
+name = "gitvista-git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gitvista-core = { path = "../core" }
+libc = "0.2"
+tempfile = "3.23"
+
+[dev-dependencies]
+serde_json = "1.0"
