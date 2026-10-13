@@ -11,6 +11,9 @@
     selectedLinesText, selectionFromContents, validateLoadedContents,
   } from '../lib/diff-view';
   import type { DiffContents, DiffResponse } from '../lib/types';
+  import { blockForLine, changeBlocks, newBlockText, restoreBlockEdit, restoreFileEdit } from '../lib/diff-actions';
+  import type { ChangeBlock } from '../lib/diff-actions';
+  import type { TextEdit } from '@pierre/diffs/edit';
 
   let { response, loading = false, error = null, onLoadContents, onRefresh, onEditingChange }: {
     response: DiffResponse | null;
@@ -34,6 +37,18 @@
   let dirty = $state(false);
   let saving = $state(false);
   let editStarting = $state(false);
+  let actionBusy = $state(false);
+  let canUndo = $state(false);
+  let canRedo = $state(false);
+  let visibleActions = $state<{ block: ChangeBlock; top: number; revision: number; version: number }[]>([]);
+  let actionLeft = $state(0);
+  let hasOldVersion = $state<boolean | null>(null);
+  let hasNewVersion = $state<boolean | null>(null);
+  let actionFrame = 0;
+  let editorAttached: (() => void) | undefined;
+  let cachedBlocks: ChangeBlock[] = [];
+  let cachedHunks: FileDiffMetadata['hunks'] | undefined;
+  let cachedVersion = -1;
   let discardDialog = $state(false);
   let keepEditingButton = $state<HTMLButtonElement>();
   let leavePromise: Promise<boolean> | null = null;
@@ -73,7 +88,7 @@
       --diffs-bg-selection: #3a4964;
       --diffs-fg-selection: #e2e7ef;
     }
-    [data-diff-type="split"] { gap: 1px; background: #ffffff0b; }
+    [data-diff-type="split"] { gap: 25px; background: #1a1c20; }
     /* Pierre omits the missing side for additions/deletions; keep its column. */
     [data-diff-type="single"][data-overflow="scroll"] {
       display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -112,6 +127,7 @@
       maxLineDiffLength: 2_000, tokenizeMaxLineLength: 2_000, tokenizeMaxLength: 20_000,
       preferredHighlighter: 'shiki-js', unsafeCSS: rendererCSS,
       enableLineSelection: true, stickyHeaders: false,
+      onPostRender: () => scheduleActions(),
       layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
       itemMetrics: { lineHeight: 20, spacing: 8, paddingTop: 8, paddingBottom: 16 },
       loadDiffFiles: async (model) => {
@@ -136,12 +152,20 @@
         if (!editorClass) throw new Error('El editor aún no está listo.');
         return new editorClass(type, { ...options, historyMaxEntries: 50,
           clipboard: { readText: readClipboardText },
-          onAttach: editor => editor.focus({ lineNumber: 'first-visible', preventScroll: true }),
+          onAttach: editor => {
+            editor.focus({ lineNumber: 'first-visible', preventScroll: true });
+            editorAttached?.();
+            editorAttached = undefined;
+            syncHistory();
+            scheduleActions();
+          },
         });
       },
       onItemEditChange: event => {
         draftText = event.file.contents;
         dirty = draftText !== baselineText;
+        syncHistory();
+        scheduleActions();
       },
       // Save goes through the native write command; cancellation restores Git's model.
       onItemEditComplete: () => 'reject',
@@ -149,8 +173,66 @@
     rendererOptions = options;
     viewer = new CodeView(options, workerPool);
     viewer.setup(viewport);
+    viewer.subscribeToScroll(() => scheduleActions());
     return viewer;
   }
+
+  function editState() {
+    const state = viewer?.getEditor(activeItemId)?.getEditState();
+    return state?.type === 'file-diff' ? state : undefined;
+  }
+  function currentBlocks(): ChangeBlock[] {
+    const state = editing ? editState() : undefined;
+    const hunks = state?.diffSession.hunks ?? activeModel?.hunks;
+    const version = state?.document.version ?? -1;
+    if (hunks !== cachedHunks || version !== cachedVersion) {
+      cachedBlocks = hunks ? changeBlocks({ hunks }) : [];
+      cachedHunks = hunks;
+      cachedVersion = version;
+    }
+    return cachedBlocks;
+  }
+  function syncHistory() {
+    const editor = viewer?.getEditor(activeItemId);
+    canUndo = editor?.canUndo ?? false;
+    canRedo = editor?.canRedo ?? false;
+  }
+  function scheduleActions() {
+    if (!mounted || actionFrame) return;
+    actionFrame = requestAnimationFrame(() => { actionFrame = 0; updateActions(); });
+  }
+  function updateActions() {
+    if (!activeModel || hasNewVersion === false || activeResponse?.result.mode === 'staged' || loading || error || contentsLoading || editStarting || saving || actionBusy) {
+      visibleActions = [];
+      return;
+    }
+    const blocks = currentBlocks();
+    const bounds = viewport.getBoundingClientRect();
+    actionLeft = viewport.clientWidth / 2;
+    const positions = new Map<string, { block: ChangeBlock; first: number; last: number }>();
+    // Inspect only virtualized rows. No full-file DOM or annotation per line.
+    for (const host of viewport.querySelectorAll('diffs-container')) {
+      const rows = host.shadowRoot?.querySelectorAll<HTMLElement>('[data-code] [data-line][data-line-type^="change-"]');
+      for (const row of rows ?? []) {
+        const side = row.closest('[data-deletions]') ? 'deletions' : 'additions';
+        const block = blockForLine(blocks, Number(row.dataset.line), side);
+        if (!block) continue;
+        const rect = row.getBoundingClientRect();
+        if (rect.bottom <= bounds.top || rect.top >= bounds.bottom) continue;
+        const first = Math.max(bounds.top, rect.top) - bounds.top;
+        const last = Math.min(bounds.bottom, rect.bottom) - bounds.top;
+        const prior = positions.get(block.key);
+        positions.set(block.key, { block, first: Math.min(first, prior?.first ?? first), last: Math.max(last, prior?.last ?? last) });
+      }
+    }
+    visibleActions = [...positions.values()].sort((a, b) => a.first - b.first).map(({ block, first, last }) => ({
+      block, top: Math.max(12, Math.min(bounds.height - 12, (first + last) / 2)),
+      revision, version: editing ? editState()?.document.version ?? -1 : -1,
+    }));
+    hunkCount = blocks.length;
+    activeHunk = Math.min(activeHunk, hunkCount - 1);
+  }
+  $effect(() => { loading; error; contentsLoading; editStarting; editing; saving; actionBusy; response; if (mounted) untrack(scheduleActions); });
 
   async function loadContents(model: FileDiffMetadata | null): Promise<DiffContents> {
     if (model !== activeModel) throw new DOMException('Diff reemplazado', 'AbortError');
@@ -165,6 +247,8 @@
       }
       if (model) validateLoadedContents(model, loaded);
       contents = loaded;
+      hasOldVersion = loaded.oldFile != null;
+      hasNewVersion = loaded.newFile != null;
       return loaded;
     }).catch((cause: unknown) => {
       if (revision === expectedRevision) renderError = cause instanceof Error ? cause.message : String(cause);
@@ -195,6 +279,9 @@
     activeModel = null;
     fullReady = false;
     hunkCount = 0;
+    visibleActions = [];
+    hasOldVersion = null;
+    hasNewVersion = null;
     if (!sameFile) activeHunk = -1;
     if (next == null || next.result.kind !== 'text') {
       viewer?.setItems([]);
@@ -203,7 +290,9 @@
     try {
       activeModel = parseSelectedDiff(next);
       if (activeModel == null) return;
-      hunkCount = activeModel.hunks.length;
+      hasOldVersion = activeModel.type !== 'new';
+      hasNewVersion = activeModel.type !== 'deleted';
+      hunkCount = changeTargets(activeModel).length;
       activeHunk = Math.min(activeHunk, hunkCount - 1);
       activeItemId = `${next.result.entryId}:${next.result.mode}`;
       const instance = renderer();
@@ -280,9 +369,20 @@
       dirty = false;
       editing = true;
       onEditingChange(true);
-      viewer!.setItems([{ id: activeItemId, type: 'diff', fileDiff: activeModel!, edit: true, version: ++itemVersion }]);
+      let attachTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const attached = new Promise<void>((resolve, reject) => {
+          editorAttached = resolve;
+          attachTimer = setTimeout(() => reject(new Error('No se pudo activar el editor. Volvé a intentar.')), 5_000);
+        });
+        viewer!.setItems([{ id: activeItemId, type: 'diff', fileDiff: activeModel!, edit: true, version: ++itemVersion }]);
+        await attached;
+      } finally { clearTimeout(attachTimer); editorAttached = undefined; }
     } catch (cause) {
       renderError = cause instanceof Error ? cause.message : String(cause);
+      if (activeModel && viewer?.getEditor(activeItemId)) {
+        viewer.setItems([{ id: activeItemId, type: 'diff', fileDiff: activeModel, edit: false, version: ++itemVersion }]);
+      }
       editing = false;
       onEditingChange(false);
       await setEditorActive(false);
@@ -297,11 +397,67 @@
     dirty = false;
     draftText = '';
     baselineText = '';
+    canUndo = false;
+    canRedo = false;
     onEditingChange(false);
     if (activeModel) viewer?.setItems([{ id: activeItemId, type: 'diff', fileDiff: activeModel, edit: false, version: ++itemVersion }]);
     await setEditorActive(false);
     install(response, onLoadContents);
     if (scope === 'full') await showFull().catch(cause => renderError = String(cause));
+  }
+  function applyRestoration(edit: TextEdit) {
+    const editor = viewer?.getEditor(activeItemId);
+    const state = editState();
+    if (!editor || !state) throw new Error('El editor aún no está listo.');
+    // A restore is one undo step, separate from typing and other restores.
+    const previous = state.document.history.undoStack.at(-1);
+    if (previous) previous.undoBoundary = true;
+    editor.applyEdits([edit]);
+    const applied = state.document.history.undoStack.at(-1);
+    if (applied) applied.undoBoundary = true;
+    syncHistory();
+    selectionHint = 'Restaurado en el borrador · Deshacer con ⌘Z · Guardar con ⌘S';
+    editor.focus({ preventScroll: true });
+    scheduleActions();
+  }
+  async function restoreBlock(action: typeof visibleActions[number]) {
+    if (actionBusy || saving || editStarting || action.revision !== revision || activeResponse?.result.mode === 'staged') return;
+    if (action.version !== (editing ? editState()?.document.version ?? -1 : -1)) { scheduleActions(); return; }
+    const block = action.block;
+    const expectedNew = editing ? newBlockText(block, viewer!.getEditor(activeItemId)!.getText()) :
+      activeModel!.additionLines.slice(block.newIndex, block.newIndex + block.newCount).join('');
+    actionBusy = true;
+    renderError = null;
+    try {
+      if (!editing) await beginEdit();
+      if (!editing || action.revision !== revision || !contents?.newFile) return;
+      const current = viewer!.getEditor(activeItemId)!.getText();
+      applyRestoration(restoreBlockEdit(block, contents.oldFile?.contents ?? '', current, expectedNew));
+    } catch (cause) { renderError = cause instanceof Error ? cause.message : String(cause); }
+    finally { actionBusy = false; }
+  }
+  async function restoreFile() {
+    if (actionBusy || saving || editStarting || activeResponse?.result.mode === 'staged') return;
+    actionBusy = true;
+    renderError = null;
+    try {
+      if (!editing) await beginEdit();
+      if (!editing || !contents?.oldFile) {
+        if (editing) throw new Error('No hay una versión vieja para restaurar este archivo.');
+        return;
+      }
+      const current = viewer!.getEditor(activeItemId)!.getText();
+      applyRestoration(restoreFileEdit(contents.oldFile.contents, current));
+    } catch (cause) { renderError = cause instanceof Error ? cause.message : String(cause); }
+    finally { actionBusy = false; }
+  }
+  function historyAction(redo: boolean) {
+    if (saving || actionBusy || editStarting) return;
+    const editor = viewer?.getEditor(activeItemId);
+    if (redo) editor?.redo(); else editor?.undo();
+    syncHistory();
+    editor?.focus({ preventScroll: true });
+    scheduleActions();
   }
   async function save() {
     if (!editing || saving || !activeResponse || !contents?.editVersion) return;
@@ -413,9 +569,13 @@
   onMount(() => {
     mounted = true;
     viewport.ownerDocument.addEventListener('copy', handleCopy);
+    const resizeObserver = new ResizeObserver(() => scheduleActions());
+    resizeObserver.observe(viewport);
     return () => {
       mounted = false;
       revision++;
+      cancelAnimationFrame(actionFrame);
+      resizeObserver.disconnect();
       viewport.ownerDocument.removeEventListener('copy', handleCopy);
       viewer?.cleanUp();
       workerPool?.terminate();
@@ -446,7 +606,10 @@
       <button class:active={scope === 'full'} aria-pressed={scope === 'full'} disabled={!canShowFull || loading || editing || editStarting} onclick={() => setScope('full')}>Archivo completo</button>
     </div>
     <div class="edit-actions">
+      <button disabled={!canShowFull || hasOldVersion === false || hasNewVersion === false || response?.result.mode === 'staged' || loading || contentsLoading || editStarting || saving || actionBusy} title={hasOldVersion === false ? 'No hay una versión vieja de este archivo' : hasNewVersion === false ? 'El archivo actual no existe' : response?.result.mode === 'staged' ? 'Usá Total o Sin preparar para restaurar el archivo actual' : `Restaurar todo el contenido desde ${leftLabel} en el borrador · Guardar con ⌘S`} onclick={restoreFile}><Icon name="restore" size={13} />Restaurar archivo</button>
       {#if editing}
+        <button class="history-button" aria-label="Deshacer" title="Deshacer · ⌘Z" disabled={!canUndo || saving || actionBusy} onclick={() => historyAction(false)}><Icon name="undo" size={14} /></button>
+        <button class="history-button" aria-label="Rehacer" title="Rehacer · ⇧⌘Z" disabled={!canRedo || saving || actionBusy} onclick={() => historyAction(true)}><Icon name="redo" size={14} /></button>
         <span class="draft-status">{dirty ? 'Sin guardar' : 'Editando'}</span>
         <button disabled={saving} onclick={async () => { if (await canLeave()) { renderError = null; await onRefresh(); } }}>Cancelar</button>
         <button class="save-button" disabled={saving || !dirty} onclick={save}>{saving ? 'Guardando…' : 'Guardar'}<kbd>⌘S</kbd></button>
@@ -462,6 +625,11 @@
   <div class="viewer-shell">
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scroll region needs keyboard focus for scrolling and copying code.) -->
     <div bind:this={viewport} class="viewport" tabindex="0" role="region" aria-label="Diff dividido: versión vieja a la izquierda y nueva a la derecha" class:inactive={!textAvailable || error != null}></div>
+    <div class="block-actions" aria-label="Acciones por bloque">
+      {#each visibleActions as action (action.block.key)}
+        <button style:top={`${action.top}px`} style:left={`${actionLeft}px`} aria-label={`Restaurar bloque de ${action.block.newCount ? 'línea nueva ' + (action.block.newStart + 1) : 'línea vieja ' + (action.block.oldStart + 1)}`} title={`Restaurar este bloque desde ${leftLabel} · Guardar con ⌘S`} onclick={() => restoreBlock(action)}><Icon name="arrow-right" size={15} /></button>
+      {/each}
+    </div>
     {#if loading || contentsLoading}<div class="progress" role="status" aria-label={contentsLoading ? 'Cargando contexto del archivo' : 'Cargando diff'}></div>{/if}
     {#if error != null || !textAvailable}
       <div class="empty-state">
@@ -499,6 +667,10 @@
   .edit-actions button:hover:not(:disabled) { background: #ffffff08; }
   .edit-actions .save-button { color: #ced6ff; background: #a7b0f919; }
   .draft-status { color: #c3ab78; font-size: 9px; }
+  .edit-actions .history-button { padding: 5px; }
+  .block-actions { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+  .block-actions button { position: absolute; transform: translate(-50%, -50%); display: grid; place-items: center; width: 21px; height: 18px; border: 1px solid #ffffff18; border-radius: 4px; background: #292e37; color: #b2bdda; pointer-events: auto; }
+  .block-actions button:hover, .block-actions button:focus-visible { color: #edf0ff; background: #41495d; border-color: #a7b0f9; outline: none; }
   .discard-backdrop { position: fixed; inset: 0; background: #0008; display: grid; place-items: center; z-index: 100; }
   .discard-dialog { width: min(420px, 90vw); padding: 24px; border: 1px solid #ffffff16; border-radius: 12px; background: #23262d; box-shadow: 0 20px 60px #0006; }
   .discard-dialog p { color: #98a3b5; font-size: 12px; line-height: 1.7; }

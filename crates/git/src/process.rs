@@ -90,6 +90,10 @@ pub(crate) fn execute(
             "core.fsmonitor=false",
             "-c",
             "diff.external=",
+            // Porcelain diff can refresh stat-only index entries even when
+            // optional locks are disabled. Keep queries strictly read-only.
+            "-c",
+            "diff.autoRefreshIndex=false",
             "-c",
             "core.quotePath=true",
             "-c",

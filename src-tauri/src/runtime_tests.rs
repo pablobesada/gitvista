@@ -301,6 +301,57 @@ async fn closing_last_root_releases_its_events_and_entries_and_allows_reopening(
 }
 
 #[tokio::test]
+async fn restoring_the_index_version_keeps_staged_changes_and_index_bytes() {
+    let fixture = TempDir::new().unwrap();
+    let root = repository(&fixture.path().join("project"));
+    git(&root, &["add", "--", "change.txt"]);
+    fs::write(root.join("change.txt"), "unstaged changes\n").unwrap();
+    let index = fs::read(root.join(".git/index")).unwrap();
+    let config = fs::read(root.join(".git/config")).unwrap();
+    let runtime = Runtime::new(fixture.path().join("config/preferences.json"));
+    let (channel, mut events) = Events::channel();
+    events.snapshot = Some(
+        runtime
+            .open(root.to_string_lossy().into_owned(), channel)
+            .await
+            .unwrap(),
+    );
+    events.done().await;
+    events.drain_for(Duration::from_millis(700)).await;
+    let entry = events.repositories()[0].entries[0].id.clone();
+    runtime
+        .diff(entry.clone(), DiffMode::Unstaged, 1)
+        .await
+        .unwrap();
+    let contents = runtime
+        .contents(entry.clone(), DiffMode::Unstaged, 1)
+        .await
+        .unwrap();
+    let original = contents.old_file.unwrap().contents;
+    assert_eq!(original, "initial change\n");
+    runtime
+        .save_file(entry.clone(), contents.edit_version.unwrap(), original)
+        .await
+        .unwrap();
+    events.done().await;
+    events.drain_for(Duration::from_millis(700)).await;
+    assert_eq!(
+        fs::read(root.join("change.txt")).unwrap(),
+        b"initial change\n"
+    );
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(root.join(".git/config")).unwrap(), config);
+    let staged = runtime
+        .diff(entry.clone(), DiffMode::Staged, 2)
+        .await
+        .unwrap();
+    assert!(staged.result.patch.contains("+initial change"));
+    let unstaged = runtime.diff(entry, DiffMode::Unstaged, 3).await.unwrap();
+    assert_eq!(unstaged.result.kind, DiffKind::Empty);
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+}
+
+#[tokio::test]
 async fn explicit_save_checks_disk_version_and_root_and_never_writes_the_index() {
     let fixture = TempDir::new().unwrap();
     let root = repository(&fixture.path().join("project"));

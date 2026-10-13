@@ -1,6 +1,7 @@
 import { hydratePartialDiff, parseDiffFromFile, parsePatchFiles, setCustomExtension } from '@pierre/diffs';
 import type { FileDiffMetadata, SelectedLineRange, SelectionSide } from '@pierre/diffs';
 import type { DiffContents, DiffResponse } from './types';
+import { changeBlocks } from './diff-actions';
 
 setCustomExtension('es6', 'javascript');
 
@@ -103,22 +104,10 @@ export function completeDiff(model: FileDiffMetadata | null, contents: DiffConte
 
 /** Navigate to the change itself, rather than the context preceding the hunk. */
 export function changeTargets(diff: FileDiffMetadata): ChangeTarget[] {
-  return diff.hunks.flatMap((hunk) => {
-    let oldLine = Math.max(1, hunk.deletionStart);
-    let newLine = Math.max(1, hunk.additionStart);
-    for (const content of hunk.hunkContent) {
-      if (content.type === 'context') {
-        oldLine += content.lines;
-        newLine += content.lines;
-      } else {
-        return [{
-          lineNumber: content.additions > 0 ? newLine : oldLine,
-          side: content.additions > 0 ? 'additions' as const : 'deletions' as const,
-        }];
-      }
-    }
-    return [];
-  });
+  return changeBlocks(diff).map(block => ({
+    lineNumber: (block.newCount ? block.newStart : block.oldStart) + 1,
+    side: block.newCount ? 'additions' : 'deletions',
+  }));
 }
 
 /** Null means that the range crosses context absent from a partial Git patch. */

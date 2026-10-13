@@ -11,6 +11,9 @@
   {:else if name === 'search'}<circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" />
   {:else if name === 'plus'}<path d="M12 5v14M5 12h14" />
   {:else if name === 'edit'}<path d="m15 5 4 4M4 20l5-1L21 7a3 3 0 0 0-4-4L5 15ZM4 20h16" />
+  {:else if name === 'arrow-right'}<path d="M4 12h16m-6-6 6 6-6 6" />
+  {:else if name === 'undo' || name === 'restore'}<path d="m8 4-5 5 5 5M3 9h10a7 7 0 0 1 0 14" />
+  {:else if name === 'redo'}<path d="m16 4 5 5-5 5m5-5H11a7 7 0 0 0 0 14" />
   {:else if name === 'refresh'}<path d="M20 7a8 8 0 1 0 1 7M20 3v5h-5" />
   {:else if name === 'chevron-right'}<path d="m9 6 6 6-6 6" />
   {:else if name === 'chevron-down'}<path d="m6 9 6 6 6-6" />

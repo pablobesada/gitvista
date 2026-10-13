@@ -4,7 +4,7 @@ Reference machine: Apple Silicon, 32 GiB RAM, macOS 26.6, local SSD, Apple Git 2
 
 ## Correctness
 
-- Type checking: zero errors and warnings; Clippy passes with warnings denied. All 38 Rust tests and 30 frontend tests pass.
+- Type checking: zero errors and warnings; Clippy passes with warnings denied. All 39 Rust tests and 45 frontend tests pass.
 - Frontend tests: tree discovery/merging, comparison filtering, 100,000 sibling rows, gitlink metadata, duplicate path ownership, distinct native names with identical display labels, selection/copy, native substrings, context hydration and external-change rejection.
 - Rust tests: real Git fixtures for additions/deletions/renames, staged+unstaged cancellation, unborn HEAD, intent-to-add, submodules, worktrees/gitfiles, odd/non-UTF-8 paths, unreadable discovery subtrees, symlinks, branch-conditional filters, limits and child-process cancellation.
 - Runtime integration: actual Tauri IPC serialization and FSEvents; selective updates retain unaffected repos, explicit excluded-folder repos are watched, writes during baseline are reconciled, and root switching cancels old work.
@@ -55,6 +55,16 @@ Native tests save only isolated fixture files. They verify disk-version rejectio
 Final native macOS QA displayed both complete versions for a net-empty Total comparison and edited an initially empty, untracked file. ⌘Q displayed the dirty-draft dialog; choosing to continue retained the exact draft, and ⌘S saved it without changing index/config checksums or leaving temporary files. The test root was closed afterward and the application returned to `oojs`.
 
 The new scope and editor retain virtualization and existing budgets. Full-view/editor RAM, startup and scrolling percentiles have not been rebenchmarked; the earlier release measurements describe the review MVP.
+
+## Block restoration — 2026-10-13
+
+Fifteen frontend tests cover separate consecutive changes within one Git hunk, partial patch coordinates, insertions/deletions at file boundaries, empty versions, CRLF/Unicode, final-newline changes, stale block rejection and whole-file undo/redo. Browser QA verifies the inline arrow, live block restoration while retaining another manual edit, whole-file restoration, separate undo history, redo, discard protection and disabled actions for Prepared/index. Restore actions create a draft and require an explicit save through the existing native writer.
+
+Native macOS QA restores two blocks within the same Git hunk from the index version, undoes only the last operation, redoes and saves the exact two-block result. A deleted-line block can be restored, and scrolling reveals the correctly positioned action for an initially offscreen block. Whole-file restoration matches the index version and keeps staged changes visible in Prepared. Test files remain untouched before explicit saving. All writes use isolated fixtures; no user checkout is edited.
+
+An additional native regression test restores a file until its contents match the index, then queries Staged and Unstaged while checking index/config bytes. It exposed Git porcelain diff's automatic stat refresh despite optional locks being disabled. The adapter now passes `-c diff.autoRefreshIndex=false` on its commands, without writing repository configuration; the regression test verifies unchanged index/config bytes after saving and follow-up queries.
+
+The final release bundle also passed the same whole-file restoration/save case in WebKit: working contents matched the index version, index/config checksums remained identical, and no temporary save files remained. The QA root was closed and `oojs` was restored as active while preserving the user's `oojs2` tab.
 
 ## Remaining performance characterization
 
