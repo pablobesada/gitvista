@@ -50,6 +50,9 @@ kbd { font-family: inherit; font-size: 10px; font-weight: 400; color: #727b8b; }
 .root-tab-select > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .root-tab-select > svg { color: #7b869d; }
 .root-tab.active .root-tab-select > svg { color: #a7b0f9; }
+.root-change-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; border: 1px solid #818b9e; }
+.root-change-dot.changed { background: #cf7c80; border-color: #cf7c80; }
+.root-change-dot.uncertain { border-color: #c6a76c; }
 .root-tab-close { display: grid; place-items: center; padding: 0; margin-right: 5px; width: 21px; height: 21px; border-radius: 4px; color: #6b7589; flex-shrink: 0; }
 .root-tab-close:hover { background: #ffffff0d; }
 .toolbar-caption { font-size: 11px; color: #646d7d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

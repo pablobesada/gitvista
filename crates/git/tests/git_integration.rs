@@ -165,7 +165,15 @@ fn submodules_are_scanned_independently_and_gitlink_changes_have_metadata() {
         .status(child, fixture.root(), &fixture.control)
         .unwrap();
     assert_eq!(child_changes[0].relative_path, "nested/module/file.txt");
+    assert!(fixture
+        .git
+        .has_changes(child.directory(), fixture.root(), &fixture.control)
+        .unwrap());
     let parent = fixture.repository();
+    assert!(!fixture
+        .git
+        .has_changes(parent.directory(), fixture.root(), &fixture.control)
+        .unwrap());
     assert!(fixture
         .git
         .status(&parent, fixture.root(), &fixture.control)
@@ -321,6 +329,10 @@ fn configured_filters_are_disabled_in_status_and_cache_invalidates_included_conf
         .find(|entry| entry.path == "file.filtered")
         .unwrap();
     assert_eq!(selected.worktree_status, "M");
+    assert!(fixture
+        .git
+        .has_changes(fixture.root(), fixture.root(), &fixture.control)
+        .unwrap());
     assert!(!fixture.root().join("filter-ran").exists());
     assert_eq!(
         fixture
@@ -462,6 +474,10 @@ fn staged_and_unstaged_changes_can_cancel_in_total_without_writing_git_state() {
         .diff(&repo, &entry, DiffMode::Total, &fixture.control)
         .unwrap();
     assert_eq!(total.kind, DiffKind::Empty);
+    assert!(fixture
+        .git
+        .has_changes(fixture.root(), fixture.root(), &fixture.control)
+        .unwrap());
     let staged = fixture
         .git
         .diff(&repo, &entry, DiffMode::Staged, &fixture.control)

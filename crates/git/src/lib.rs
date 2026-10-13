@@ -62,6 +62,46 @@ impl CliGit {
         }
     }
 
+    /// Badge-only status: no file models, patches, rename detection or retained paths.
+    pub fn has_changes(
+        &self,
+        directory: &Path,
+        root: &Path,
+        control: &Cancellation,
+    ) -> Result<bool, String> {
+        let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+        let repo = self.inspect_repository(directory, &root, control)?;
+        let mut arguments = self.filter_overrides(&repo, control)?;
+        arguments.extend(args(&[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=normal",
+            // Inspect nested repos independently with their own filter overrides.
+            "--ignore-submodules=dirty",
+            "--no-renames",
+        ]));
+        if root != repo.directory() {
+            if let Ok(scope) = root.strip_prefix(repo.directory()) {
+                arguments.push("--".into());
+                arguments.push(scope.as_os_str().to_owned());
+            }
+        }
+        let output = process::execute_presence(
+            &self.executable,
+            directory,
+            &arguments,
+            Duration::from_secs(2),
+            control,
+        )
+        .map_err(|error| error.to_string())?;
+        if output.status.success() {
+            Ok(!output.stdout.is_empty())
+        } else {
+            Err(output.error_message())
+        }
+    }
+
     fn run(
         &self,
         repo: &Path,

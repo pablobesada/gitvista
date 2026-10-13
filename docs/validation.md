@@ -66,6 +66,20 @@ An additional native regression test restores a file until its contents match th
 
 The final release bundle also passed the same whole-file restoration/save case in WebKit: working contents matched the index version, index/config checksums remained identical, and no temporary save files remained. The QA root was closed and `oojs` was restored as active while preserving the user's `oojs2` tab.
 
+## Full-file change overview — 2026-10-13
+
+Six frontend tests cover proportional placement across distant hunks and unchanged tails, split padding for deletions, additions at EOF, empty/identical versions and minimum thumb size at both scroll boundaries. `npm run check`, all 51 frontend tests and the macOS release bundle pass.
+
+Browser QA verifies red/green marks, click-to-block navigation, keyboard navigation and live updates in a long preview-only draft. The overview uses one bounded canvas alongside the existing single virtualized diff. Native WebKit QA verifies the full-file overview on a real added file, the thumb reaching 100% at EOF and keyboard navigation returning to the change block. Native QA uses only read operations; draft changes were confined to browser preview data. UI RAM and frame rates were not remeasured for this addition.
+
+## Root-tab change badges — 2026-10-13
+
+The active badge uses raw workspace entries independently of comparison mode, search and hidden untracked entries. Inactive roots retain only scalar badge results, checked on opening/switching roots, focus or explicit refresh. Cached checks expire after 60 seconds but do not schedule a timer. A single cancellable badge probe shares the three-job background budget; root work is limited to five seconds and status to two seconds. Native blur cancels the probe. No inactive-root watcher, file snapshot or patch is retained.
+
+Validation passes: 54 frontend tests, 43 Rust tests, Clippy with warnings denied, Svelte checks and the release app bundle. Fixture tests verify ignored nested repositories, explicitly added generated-directory repositories, subdirectory scope, cached/forced refresh, unknown errors, filter suppression, staged/unstaged cancellation, unchanged Git index/config and releasing both job permits on cancellation. Querying dormant roots leaves the active workspace generation and entries unchanged. Browser QA checks both active/inactive red dots and preservation while filtering all entries away. Native WebKit QA displays change indicators for `oojs`, `oojs2` and `oojs-skills` without switching to the inactive roots.
+
+A 15-second idle sample with those three tabs reports 0.0% mean CPU across the app plus its identified WebContent, GPU and Networking processes, with four processes throughout. Total RSS averages 208.2 MiB (peak 208.5 MiB) with a selected highlighted diff; this measures the whole app, not the incremental memory of badges. An earlier 10-second sample measured 137.9 MiB with different displayed content and is not a controlled memory comparison. The release adapter benchmark on GitVista (five iterations, three repositories) reports status median 26.1 ms and p95 57.9 ms; it measures the adapter, not badge latency or UI frames.
+
 ## Remaining performance characterization
 
 The product functionality is implemented and tested. The goals of startup ≤1 second, scroll at 60 fps, and end-to-end diff p95 ≤250 ms still need a dedicated native frame/startup benchmark; they are not claimed as measured guarantees. Keep these acceptance goals in future profiling rather than inferring them from Rust, Tauri or virtualized DOM alone.

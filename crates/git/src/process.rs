@@ -37,7 +37,7 @@ impl std::fmt::Display for ProcessError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Cancelled => formatter.write_str("Operation cancelled"),
-            Self::Timeout => formatter.write_str("Git command exceeded its 30-second time limit"),
+            Self::Timeout => formatter.write_str("Git command exceeded its time limit"),
             Self::OutputLimit => {
                 formatter.write_str("Git command exceeded its output memory limit")
             }
@@ -70,6 +70,42 @@ pub(crate) fn execute(
     stdout_limit: usize,
     timeout: Duration,
     control: &Cancellation,
+) -> Result<CommandOutput, ProcessError> {
+    execute_inner(executable, cwd, args, stdout_limit, timeout, control, false)
+}
+
+/// Drain output without retaining paths: one byte records whether Git reported changes.
+pub(crate) fn execute_presence(
+    executable: &OsStr,
+    cwd: &Path,
+    args: &[OsString],
+    timeout: Duration,
+    control: &Cancellation,
+) -> Result<CommandOutput, ProcessError> {
+    execute_inner(executable, cwd, args, 1, timeout, control, true)
+}
+
+fn collect_presence(mut reader: impl Read) -> Result<Vec<u8>, String> {
+    let mut present = false;
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut chunk).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        present = true;
+    }
+    Ok(if present { vec![1] } else { vec![] })
+}
+
+fn execute_inner(
+    executable: &OsStr,
+    cwd: &Path,
+    args: &[OsString],
+    stdout_limit: usize,
+    timeout: Duration,
+    control: &Cancellation,
+    presence_only: bool,
 ) -> Result<CommandOutput, ProcessError> {
     if control.is_cancelled() {
         return Err(ProcessError::Cancelled);
@@ -127,7 +163,13 @@ pub(crate) fn execute(
     let stderr = child.stderr.take().expect("piped stderr");
     let stdout_overflow = overflow.clone();
     let stderr_overflow = overflow.clone();
-    let output_reader = thread::spawn(move || collect(stdout, stdout_limit, &stdout_overflow));
+    let output_reader = thread::spawn(move || {
+        if presence_only {
+            collect_presence(stdout)
+        } else {
+            collect(stdout, stdout_limit, &stdout_overflow)
+        }
+    });
     let error_reader = thread::spawn(move || collect(stderr, 64 * 1024, &stderr_overflow));
     let start = Instant::now();
     let status = loop {
@@ -230,6 +272,16 @@ fn finish_aborted_readers(stdout: ReaderThread, stderr: ReaderThread) {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    #[test]
+    fn presence_reader_retains_one_byte_even_for_large_status_output() {
+        assert!(collect_presence(Cursor::new(Vec::<u8>::new()))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            collect_presence(Cursor::new(vec![42u8; 1024 * 1024])).unwrap(),
+            vec![1]
+        );
+    }
     #[test]
     fn output_reader_has_a_hard_memory_bound() {
         let overflow = AtomicBool::new(false);

@@ -1,5 +1,6 @@
 mod benchmark;
 mod editor;
+mod root_badges;
 mod runtime;
 #[cfg(test)]
 mod runtime_tests;
@@ -26,6 +27,14 @@ fn close_workspace(runtime: State<'_, Runtime>) -> Result<(), String> {
 #[tauri::command]
 async fn refresh_workspace(runtime: State<'_, Runtime>) -> Result<(), String> {
     runtime.refresh(true).await
+}
+#[tauri::command]
+async fn get_root_badges(
+    roots: Vec<String>,
+    force: bool,
+    runtime: State<'_, Runtime>,
+) -> Result<Vec<root_badges::RootBadge>, String> {
+    runtime.root_badges(roots, force).await
 }
 #[tauri::command]
 async fn add_repository(path: String, runtime: State<'_, Runtime>) -> Result<(), String> {
@@ -120,6 +129,9 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(false) = event {
+                window.state::<Runtime>().cancel_root_badges();
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.state::<Runtime>().editor_active() {
                     api.prevent_close();
@@ -137,6 +149,7 @@ pub fn run() {
             open_workspace,
             close_workspace,
             refresh_workspace,
+            get_root_badges,
             add_repository,
             get_diff,
             load_diff_contents,

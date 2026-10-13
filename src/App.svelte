@@ -5,13 +5,16 @@
   import Icon from './components/Icon.svelte';
   import RepoUntrackedToggle from './components/RepoUntrackedToggle.svelte';
   import RootTabs from './components/RootTabs.svelte';
-  import { addRepository, chooseRepository, chooseRoot, closeWorkspace, defaultPreferences, exitApplication, getDiff, getPreferences, isDesktop, loadDiffContents, onExitRequested, openWorkspace, refreshWorkspace, savePreferences } from './lib/bridge';
-  import { canonicalizeTab, closeTab, restoreRoots } from './lib/workspace-tabs';
+  import { addRepository, chooseRepository, chooseRoot, closeWorkspace, defaultPreferences, exitApplication, getDiff, getPreferences, getRootBadges, isDesktop, loadDiffContents, onExitRequested, openWorkspace, refreshWorkspace, savePreferences } from './lib/bridge';
+  import { canonicalizeTab, closeTab, restoreRoots, workspaceBadge } from './lib/workspace-tabs';
   import { allEntries, buildChangeTree, directoryPaths, hiddenUntrackedCount, isUntracked } from './lib/tree';
-  import type { ChangeEntry, DiffContents, DiffMode, DiffResponse, Preferences, TreeView, WorkspaceEvent, WorkspaceSnapshot } from './lib/types';
+  import type { ChangeEntry, DiffContents, DiffMode, DiffResponse, Preferences, RootBadgeState, TreeView, WorkspaceEvent, WorkspaceSnapshot } from './lib/types';
 
   let preferences = $state<Preferences>(structuredClone(defaultPreferences));
   let snapshot = $state.raw<WorkspaceSnapshot | null>(null);
+  let rootBadges = $state.raw<Record<string, RootBadgeState>>({});
+  let badgeRequest = 0;
+  let windowActive = $state(true);
   let mode = $state<DiffMode>('total');
   let query = $state('');
   let selected = $state.raw<ChangeEntry | null>(null);
@@ -38,6 +41,7 @@
   let diffTimer: ReturnType<typeof setTimeout> | undefined;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   const states = $derived(snapshot?.repositories ?? []);
+  const activeRootPath = $derived(snapshot?.root ?? null);
   const treeOptions = $derived({ view: preferences.treeView, untrackedByRepo: preferences.untrackedByRepo });
   const modeTree = $derived(buildChangeTree(states, mode, '', treeOptions));
   const tree = $derived(query.trim() ? buildChangeTree(states, mode, query, treeOptions) : modeTree);
@@ -190,6 +194,48 @@
       snapshot = { ...snapshot, scanning: false };
     }
   }
+  $effect(() => {
+    const current = snapshot;
+    const error = workspaceError;
+    if (current) untrack(() => {
+      rootBadges = { ...rootBadges, [current.root]: workspaceBadge(current, error, rootBadges[current.root]) };
+    });
+  });
+  async function checkInactiveRoots(force = false) {
+    if (!windowActive) return;
+    const roots = preferences.openedRoots.filter(root => root !== snapshot?.root);
+    const request = ++badgeRequest;
+    try {
+      const results = await getRootBadges(roots, force);
+      if (request !== badgeRequest) return;
+      const next = Object.fromEntries(Object.entries(rootBadges).filter(([root]) => preferences.openedRoots.includes(root)));
+      for (const result of results) {
+        if (result.root === snapshot?.root || !preferences.openedRoots.includes(result.root)) continue;
+        const prior = next[result.root];
+        next[result.root] = { hasChanges: result.hasChanges ?? (prior?.hasChanges === true ? true : null), stale: !!result.error, error: result.error };
+      }
+      rootBadges = next;
+    } catch (cause) {
+      if (request !== badgeRequest || !windowActive) return;
+      const next = { ...rootBadges };
+      for (const root of roots) {
+        if (root === snapshot?.root || !preferences.openedRoots.includes(root)) continue;
+        next[root] = { hasChanges: next[root]?.hasChanges === true ? true : null, stale: true, error: String(cause) };
+      }
+      rootBadges = next;
+    }
+  }
+  $effect(() => {
+    preferences.openedRoots; activeRootPath;
+    if (!opening && windowActive) untrack(() => void checkInactiveRoots());
+  });
+  function windowFocused() {
+    const wasActive = windowActive;
+    windowActive = true;
+    if (!isDesktop && snapshot && !opening && !snapshot.scanning) void refresh();
+    else if (wasActive && !opening) void checkInactiveRoots();
+  }
+  function windowBlurred() { windowActive = false; ++badgeRequest; }
   async function openRoot(root: string) {
     recentMenu = false;
     if (snapshot?.root === root && !workspaceError) return;
@@ -274,6 +320,7 @@
   }
   async function refresh() {
     if (!snapshot || snapshot.scanning || opening) return;
+    void checkInactiveRoots(true);
     workspaceError = null;
     try { await refreshWorkspace(); }
     catch (error) { workspaceError = String(error); }
@@ -380,6 +427,7 @@
       mounted = false;
       removeExitListener?.();
       ++sessionId;
+      ++badgeRequest;
       clearTimeout(saveTimer);
       clearTimeout(diffTimer);
       clearTimeout(toastTimer);
@@ -388,7 +436,7 @@
   });
 </script>
 
-<svelte:window onkeydown={keydown} onfocus={() => { if (!isDesktop && snapshot && !opening && !snapshot.scanning) void refresh(); }} />
+<svelte:window onkeydown={keydown} onfocus={windowFocused} onblur={windowBlurred} />
 <div class="app-shell" class:desktop={isDesktop} class:resizing style:--sidebar-width={`${preferences.sidebarWidth}px`}>
   <header class="app-toolbar" data-tauri-drag-region>
     <div class="brand" data-tauri-drag-region>
@@ -397,7 +445,7 @@
     </div>
     <div class="workspace-control" data-tauri-drag-region>
       {#if preferences.openedRoots.length}
-        <RootTabs roots={preferences.openedRoots} activeRoot={snapshot?.root ?? null} onSelect={root => void openRoot(root)} onClose={root => void closeRoot(root)} />
+        <RootTabs roots={preferences.openedRoots} activeRoot={snapshot?.root ?? null} badges={rootBadges} onSelect={root => void openRoot(root)} onClose={root => void closeRoot(root)} />
       {:else}<span class="toolbar-caption" data-tauri-drag-region>Un espacio para revisar tus cambios</span>{/if}
     </div>
     <div class="toolbar-actions">

@@ -14,6 +14,7 @@
   import { blockForLine, changeBlocks, newBlockText, restoreBlockEdit, restoreFileEdit } from '../lib/diff-actions';
   import type { ChangeBlock } from '../lib/diff-actions';
   import type { TextEdit } from '@pierre/diffs/edit';
+  import { changeOverview, overviewThumb } from '../lib/change-overview';
 
   let { response, loading = false, error = null, onLoadContents, onRefresh, onEditingChange }: {
     response: DiffResponse | null;
@@ -25,6 +26,11 @@
   } = $props();
 
   let viewport: HTMLDivElement;
+  let overviewCanvas = $state<HTMLCanvasElement>();
+  let overview = changeOverview([], 0, 0);
+  let overviewHunks: FileDiffMetadata['hunks'] | undefined;
+  let overviewVersion = -1;
+  let overviewProgress = $state(0);
   let mounted = $state(false);
   let renderError = $state<string | null>(null);
   let contentsLoading = $state(false);
@@ -199,7 +205,67 @@
   }
   function scheduleActions() {
     if (!mounted || actionFrame) return;
-    actionFrame = requestAnimationFrame(() => { actionFrame = 0; updateActions(); });
+    actionFrame = requestAnimationFrame(() => { actionFrame = 0; updateOverview(); updateActions(); });
+  }
+  function updateOverview() {
+    if (!overviewCanvas || !activeModel || !viewer || activeModel.isPartial) return;
+    const state = editing ? editState() : undefined;
+    const hunks = state?.diffSession.hunks ?? activeModel.hunks;
+    const version = state?.document.version ?? -1;
+    if (hunks !== overviewHunks || version !== overviewVersion) {
+      overview = changeOverview(hunks, activeModel.deletionLines.length, state?.document.lineCount ?? activeModel.additionLines.length);
+      overviewHunks = hunks;
+      overviewVersion = version;
+    }
+    const width = overviewCanvas.clientWidth;
+    const height = overviewCanvas.clientHeight;
+    const scale = Math.min(2, window.devicePixelRatio || 1);
+    overviewCanvas.width = Math.round(width * scale);
+    overviewCanvas.height = Math.round(height * scale);
+    const context = overviewCanvas.getContext('2d');
+    if (!context) return;
+    context.scale(scale, scale);
+    for (const mark of overview.marks) {
+      const top = Math.min(height - 3, height * mark.row / overview.rows);
+      const size = Math.min(height - top, Math.max(3, height * mark.count / overview.rows));
+      context.fillStyle = mark.side === 'deletions' ? '#c47879' : '#8aa980';
+      context.fillRect(mark.side === 'deletions' ? 3 : width / 2 + 1, Math.max(0, top), width / 2 - 4, size);
+    }
+    const total = viewer.getScrollHeight();
+    const visible = viewer.getHeight();
+    const scroll = viewer.getScrollTop();
+    overviewProgress = Math.round(100 * scroll / Math.max(1, total - visible));
+    const thumb = overviewThumb(scroll, total, visible, height);
+    context.fillStyle = '#ffffff14';
+    context.fillRect(1, thumb.top, width - 2, thumb.height);
+    context.strokeStyle = '#ffffff38';
+    context.strokeRect(1.5, thumb.top + 0.5, width - 3, Math.max(0, thumb.height - 1));
+  }
+  function overviewPointer(event: PointerEvent) {
+    if (!overviewCanvas || !viewer) return;
+    const bounds = overviewCanvas.getBoundingClientRect();
+    const y = Math.max(0, Math.min(bounds.height, event.clientY - bounds.top));
+    const side = event.clientX - bounds.left < bounds.width / 2 ? 'deletions' : 'additions';
+    let nearest: typeof overview.marks[number] | undefined;
+    let distance = 6;
+    for (const mark of overview.marks) {
+      if (mark.side !== side) continue;
+      const top = bounds.height * mark.row / overview.rows;
+      const bottom = top + Math.max(3, bounds.height * mark.count / overview.rows);
+      const delta = Math.max(top - y, y - bottom, 0);
+      if (delta <= distance) { distance = delta; nearest = mark; }
+    }
+    if (nearest) scrollToBlock(nearest.block);
+    else viewer.scrollTo({ type: 'position', position: y / bounds.height * viewer.getScrollHeight() - viewer.getHeight() / 2, behavior: 'instant' });
+  }
+  function overviewKeydown(event: KeyboardEvent) {
+    if (!viewer) return;
+    const key = event.key;
+    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (key === 'ArrowUp' || key === 'ArrowDown') nextHunk(key === 'ArrowUp' ? -1 : 1);
+    else viewer.scrollTo({ type: 'position', behavior: 'instant', position: key === 'Home' ? 0 : key === 'End' ? viewer.getScrollHeight() : viewer.getScrollTop() + (key === 'PageUp' ? -1 : 1) * viewer.getHeight() });
   }
   function updateActions() {
     if (!activeModel || hasNewVersion === false || activeResponse?.result.mode === 'staged' || loading || error || contentsLoading || editStarting || saving || actionBusy) {
@@ -512,11 +578,16 @@
 
   export function nextHunk(direction: 1 | -1): void {
     if (activeModel == null || viewer == null) return;
-    const targets = changeTargets(activeModel);
-    if (targets.length === 0) return;
-    activeHunk = activeHunk < 0 ? (direction > 0 ? 0 : targets.length - 1) :
-      (activeHunk + direction + targets.length) % targets.length;
-    viewer.scrollTo({ type: 'line', id: activeItemId, ...targets[activeHunk], align: 'center', behavior: 'instant' });
+    const count = currentBlocks().length;
+    if (!count) return;
+    scrollToBlock(activeHunk < 0 ? (direction > 0 ? 0 : count - 1) : (activeHunk + direction + count) % count);
+  }
+  function scrollToBlock(index: number) {
+    const block = currentBlocks()[index];
+    if (!block || !viewer) return;
+    activeHunk = index;
+    viewer.scrollTo({ type: 'line', id: activeItemId, lineNumber: (block.newCount ? block.newStart : block.oldStart) + 1,
+      side: block.newCount ? 'additions' : 'deletions', align: 'center', behavior: 'instant' });
   }
 
   function synchronousSelectionText(): string | null {
@@ -591,6 +662,8 @@
   const rightLabel = $derived(response?.result.mode === 'staged' ? 'Índice' : 'Actual');
   const textAvailable = $derived(response != null && (response.result.kind === 'text' || (scope === 'full' && fullReady && ['empty', 'metadata'].includes(response.result.kind))));
   const canShowFull = $derived(response != null && ['text', 'empty', 'metadata'].includes(response.result.kind));
+  const overviewShown = $derived(scope === 'full' && fullReady && textAvailable && !error && !renderError && !loading && !contentsLoading);
+  $effect(() => { overviewShown; overviewCanvas; if (mounted) untrack(scheduleActions); });
   const stateTitle = $derived(error ? 'No se pudo cargar el diff' : response == null ? 'Elegí un archivo para revisar' :
     response.result.kind === 'binary' ? 'Archivo binario' : response.result.kind === 'conflict' ? 'Conflicto de merge' :
     response.result.kind === 'tooLarge' ? 'Archivo demasiado grande' : response.result.kind === 'metadata' ? 'Cambios de metadatos' :
@@ -618,13 +691,18 @@
       {/if}
     </div>
   </div>
-  <div class="versions" aria-hidden="true">
+  <div class="versions" class:with-overview={overviewShown} aria-hidden="true">
     <div><span class="version-dot old"></span><span>Viejo</span><span class="revision">{leftLabel}</span></div>
     <div><span class="version-dot new"></span><span>Nuevo</span><span class="revision">{rightLabel}</span></div>
   </div>
-  <div class="viewer-shell">
+  <div class="viewer-shell" class:with-overview={overviewShown}>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scroll region needs keyboard focus for scrolling and copying code.) -->
     <div bind:this={viewport} class="viewport" tabindex="0" role="region" aria-label="Diff dividido: versión vieja a la izquierda y nueva a la derecha" class:inactive={!textAvailable || error != null}></div>
+    {#if overviewShown}
+      <div class="change-overview" role="slider" tabindex="0" aria-label="Mapa de cambios del archivo completo" aria-valuemin="0" aria-valuemax="100" aria-valuenow={overviewProgress} aria-orientation="vertical" aria-valuetext={`${overviewProgress}% del archivo · rojo: eliminaciones; verde: adiciones`} title="Cambios en todo el archivo · Rojo: eliminaciones · Verde: adiciones · Clic para ir · ↑/↓ para recorrer bloques" onpointerdown={overviewPointer} onkeydown={overviewKeydown}>
+        <canvas bind:this={overviewCanvas} aria-hidden="true"></canvas>
+      </div>
+    {/if}
     <div class="block-actions" aria-label="Acciones por bloque">
       {#each visibleActions as action (action.block.key)}
         <button style:top={`${action.top}px`} style:left={`${actionLeft}px`} aria-label={`Restaurar bloque de ${action.block.newCount ? 'línea nueva ' + (action.block.newStart + 1) : 'línea vieja ' + (action.block.oldStart + 1)}`} title={`Restaurar este bloque desde ${leftLabel} · Guardar con ⌘S`} onclick={() => restoreBlock(action)}><Icon name="arrow-right" size={15} /></button>
@@ -678,12 +756,17 @@
   .discard-dialog button { padding: 8px 10px; border-radius: 5px; font-size: 12px; background: #ffffff08; }
   .discard-dialog .discard-button { color: #ffc0c3; background: #c478791c; }
   .versions { display: grid; grid-template-columns: 1fr 1fr; flex: 0 0 35px; border-bottom: 1px solid #ffffff09; background: #1c1e21; color: #acb3c0; font-size: 11px; }
+  .versions.with-overview { padding-right: 30px; }
   .versions > div { display: flex; align-items: center; gap: 7px; padding: 0 16px; }
   .versions > div + div { border-left: 1px solid #ffffff09; }
   .version-dot { width: 5px; height: 5px; border-radius: 50%; }
   .version-dot.old { background: #c47879; } .version-dot.new { background: #8aa980; }
   .revision { margin-left: auto; font: 10px "SF Mono", Menlo, monospace; color: #747e8e; }
   .viewer-shell { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+  .viewer-shell.with-overview { padding-right: 30px; }
+  .change-overview { position: absolute; top: 0; right: 0; bottom: 0; width: 30px; border-left: 1px solid #ffffff0b; background: #252526; cursor: pointer; outline: none; }
+  .change-overview:focus-visible { box-shadow: inset 0 0 0 1px #a7b0f9; }
+  .change-overview canvas { display: block; width: 100%; height: 100%; }
   .viewport { height: 100%; width: 100%; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-color: #55585b transparent; background: #1e1e1e; outline: none; }
   .viewport.inactive { visibility: hidden; }
   .viewport:focus-visible { box-shadow: inset 0 0 0 1px #a7b0f94d; }

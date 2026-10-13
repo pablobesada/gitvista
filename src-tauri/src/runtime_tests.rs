@@ -225,6 +225,106 @@ fn repository(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dormant_root_badges_find_ignored_nested_repos_and_cache_only_summary() {
+    let fixture = TempDir::new().unwrap();
+    let active = repository(&fixture.path().join("active"));
+    let dormant = repository(&fixture.path().join("dormant"));
+    fs::write(dormant.join("change.txt"), "baseline\n").unwrap();
+    fs::write(dormant.join(".gitignore"), "nested/\nnode_modules/\n").unwrap();
+    git(&dormant, &["add", ".gitignore"]);
+    git(&dormant, &["commit", "-q", "-m", "ignore nested fixtures"]);
+    let nested = repository(&dormant.join("nested"));
+    let index = fs::read(dormant.join(".git/index")).unwrap();
+    let config = fs::read(dormant.join(".git/config")).unwrap();
+    let nested_index = fs::read(nested.join(".git/index")).unwrap();
+    let runtime = Runtime::new(fixture.path().join("preferences.json"));
+    let (channel, mut events) = Events::channel();
+    runtime
+        .open(active.to_string_lossy().into_owned(), channel)
+        .await
+        .unwrap();
+    events.done().await;
+    let generation = events.snapshot.as_ref().unwrap().generation;
+    let roots = vec![dormant.to_string_lossy().into_owned()];
+    assert_eq!(
+        runtime.root_badges(roots.clone(), false).await.unwrap()[0].has_changes,
+        Some(true)
+    );
+    fs::write(nested.join("change.txt"), "baseline\n").unwrap();
+    // Focus within the TTL needs no new Git work, even if the filesystem changed.
+    assert_eq!(
+        runtime.root_badges(roots.clone(), false).await.unwrap()[0].has_changes,
+        Some(true)
+    );
+    assert_eq!(
+        runtime.root_badges(roots.clone(), true).await.unwrap()[0].has_changes,
+        Some(false)
+    );
+    let excluded = repository(&dormant.join("node_modules/explicit"));
+    assert_eq!(
+        runtime.root_badges(roots.clone(), true).await.unwrap()[0].has_changes,
+        Some(false)
+    );
+    let mut preferences = runtime.preferences();
+    preferences.extra_repositories.insert(
+        roots[0].clone(),
+        vec![excluded.to_string_lossy().into_owned()],
+    );
+    runtime.save_preferences(preferences).unwrap();
+    assert_eq!(
+        runtime.root_badges(roots, true).await.unwrap()[0].has_changes,
+        Some(true)
+    );
+    assert_eq!(fs::read(dormant.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(dormant.join(".git/config")).unwrap(), config);
+    assert_eq!(fs::read(nested.join(".git/index")).unwrap(), nested_index);
+    events.drain_for(Duration::from_millis(100)).await;
+    assert_eq!(events.snapshot.as_ref().unwrap().generation, generation);
+    assert_eq!(events.repositories().len(), 1);
+    assert_eq!(events.repository(&active).entries.len(), 1);
+    runtime.close().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn badge_errors_are_unknown_and_subdirectory_roots_are_scoped() {
+    let fixture = TempDir::new().unwrap();
+    let parent = repository(&fixture.path().join("parent"));
+    let child = parent.join("folder");
+    fs::create_dir_all(&child).unwrap();
+    let runtime = Runtime::new(fixture.path().join("preferences.json"));
+    let roots = vec![child.to_string_lossy().into_owned()];
+    let badge = runtime
+        .root_badges(roots.clone(), true)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        badge.has_changes,
+        Some(false),
+        "The changed parent file is outside this root"
+    );
+    fs::write(child.join("untracked"), "new\n").unwrap();
+    assert_eq!(
+        runtime.root_badges(roots, true).await.unwrap()[0].has_changes,
+        Some(true)
+    );
+    let missing = runtime
+        .root_badges(
+            vec![fixture
+                .path()
+                .join("missing")
+                .to_string_lossy()
+                .into_owned()],
+            true,
+        )
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(missing.has_changes, None);
+    assert!(missing.error.is_some());
+}
+
 fn assert_incremental_preserves_all(events: &Events, from: usize, count: usize, changed: &Path) {
     let refresh = &events.seen[from..];
     assert!(refresh.iter().any(|event| matches!(event, WorkspaceEvent::Reset { snapshot } if snapshot.repositories.len() == count)),

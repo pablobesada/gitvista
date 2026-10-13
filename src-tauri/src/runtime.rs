@@ -27,6 +27,7 @@ struct Inner {
     cache: Mutex<ByteLru<String, DiffResult>>,
     channel: Mutex<Option<Channel<WorkspaceEvent>>>,
     editor_active: AtomicBool,
+    badges: crate::root_badges::BadgeChecks,
 }
 struct Data {
     root: Option<PathBuf>,
@@ -84,10 +85,30 @@ impl Runtime {
             cache: Mutex::new(ByteLru::new(CACHE_BUDGET_BYTES)),
             channel: Mutex::new(None),
             editor_active: AtomicBool::new(false),
+            badges: crate::root_badges::BadgeChecks::new(),
         }))
     }
     pub fn preferences(&self) -> Preferences {
         self.0.preferences.lock().unwrap().clone()
+    }
+    pub async fn root_badges(
+        &self,
+        roots: Vec<String>,
+        force: bool,
+    ) -> Result<Vec<crate::root_badges::RootBadge>, String> {
+        self.0
+            .badges
+            .check(
+                self.0.backend.clone(),
+                self.0.background.clone(),
+                roots,
+                self.preferences().extra_repositories,
+                force,
+            )
+            .await
+    }
+    pub fn cancel_root_badges(&self) {
+        self.0.badges.cancel();
     }
     pub fn editor_active(&self) -> bool {
         self.0.editor_active.load(Ordering::Acquire)

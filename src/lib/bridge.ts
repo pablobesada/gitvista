@@ -2,7 +2,7 @@ import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
-import type { Preferences, WorkspaceEvent, WorkspaceSnapshot, DiffMode, DiffResponse, DiffContents, EditVersion } from './types';
+import type { Preferences, WorkspaceEvent, WorkspaceSnapshot, DiffMode, DiffResponse, DiffContents, EditVersion, RootBadge } from './types';
 import { demoContents, demoDiff, demoWorkspace, saveDemoContents } from './demo';
 
 export const isDesktop = isTauri();
@@ -67,6 +67,10 @@ export async function refreshWorkspace(): Promise<void> {
   const snapshot = demoWorkspace(demoRoot, ++demoGeneration);
   demoListener?.({ type: 'reset', snapshot });
   demoListener?.({ type: 'done', generation: demoGeneration, elapsedMs: 42 });
+}
+export async function getRootBadges(roots: string[], force = false): Promise<RootBadge[]> {
+  if (isDesktop) return invoke('get_root_badges', { roots, force });
+  return roots.map(root => ({ root, hasChanges: demoWorkspace(root, 0).repositories.some(repo => repo.entries.length > 0), error: null }));
 }
 export async function addRepository(path: string): Promise<void> {
   if (isDesktop) return invoke('add_repository', { path });
