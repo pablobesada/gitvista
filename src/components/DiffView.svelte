@@ -38,6 +38,7 @@
   let activeHunk = $state(-1);
   let hunkCount = $state(0);
   let scope = $state<'changes' | 'full'>('changes');
+  let wordWrap = $state(false);
   let fullReady = $state(false);
   let editing = $state(false);
   let dirty = $state(false);
@@ -87,16 +88,19 @@
       --diffs-addition-base: #92b88b;
       --diffs-bg-deletion: #4b2528;
       --diffs-bg-addition: #2c3d28;
-      --diffs-bg-deletion-emphasis: #783239;
-      --diffs-bg-addition-emphasis: #436539;
+      --diffs-bg-deletion-emphasis: #943d46;
+      --diffs-bg-addition-emphasis: #4b753d;
       --diffs-bg-buffer: #191b1d;
       --diffs-bg-hover: #ffffff05;
       --diffs-bg-selection: #3a4964;
       --diffs-fg-selection: #e2e7ef;
     }
     [data-diff-type="split"] { gap: 25px; background: #1a1c20; }
+    /* Wrapped split rows share four grid columns, including both gutters. */
+    [data-diff-type="split"][data-overflow="wrap"] { gap: 0; }
+    [data-diff-type="split"][data-overflow="wrap"] > [data-additions] > [data-gutter] { border-left: 25px solid #1a1c20; }
     /* Pierre omits the missing side for additions/deletions; keep its column. */
-    [data-diff-type="single"][data-overflow="scroll"] {
+    [data-diff-type="single"] {
       display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     }
     [data-diff-type="single"] > [data-additions] { grid-column: 2; border-left: 1px solid #ffffff0b; }
@@ -122,11 +126,12 @@
       langs: [],
       preferredHighlighter: 'shiki-js',
       tokenizeMaxLineLength: 2_000,
+      // Longer lines use the bounded adapter in scripts/pierre-long-lines.ts.
       maxLineDiffLength: 2_000,
       lineDiffType: 'word-alt',
     });
     const options: CodeViewOptions<undefined, undefined> = {
-      theme: 'dark-plus', themeType: 'dark', diffStyle: 'split', overflow: 'scroll',
+      theme: 'dark-plus', themeType: 'dark', diffStyle: 'split', overflow: wordWrap ? 'wrap' : 'scroll',
       diffIndicators: 'none', disableFileHeader: true, disableLineNumbers: false,
       expandUnchanged: false, expansionLineCount: 20, collapsedContextThreshold: 3,
       hunkSeparators: 'line-info', lineDiffType: 'word-alt',
@@ -380,7 +385,7 @@
   async function showFull(): Promise<void> {
     if (!activeResponse || !['text', 'empty', 'metadata'].includes(activeResponse.result.kind)) return;
     if (fullReady && activeModel && contents) {
-      viewer?.setOptions({ ...rendererOptions, expandUnchanged: scope === 'full' });
+      applyViewOptions();
       return;
     }
     const expected = revision;
@@ -390,7 +395,8 @@
       // CodeView owns hydration and its highlight/layout caches. Mutating its
       // mounted metadata here would leave the previous partial AST out of sync.
       fullReady = true;
-      renderer().setOptions({ ...rendererOptions, expandUnchanged: scope === 'full' });
+      renderer();
+      applyViewOptions();
       return;
     }
     activeModel = completeDiff(activeModel, loaded);
@@ -398,7 +404,7 @@
     hunkCount = changeTargets(activeModel).length;
     fullReady = true;
     const instance = renderer();
-    instance.setOptions({ ...rendererOptions, expandUnchanged: scope === 'full' });
+    applyViewOptions();
     instance.setItems([{ id: activeItemId, type: 'diff', fileDiff: activeModel, version: ++itemVersion }]);
   }
   async function setScope(next: 'changes' | 'full') {
@@ -406,8 +412,16 @@
     scope = next;
     renderError = null;
     try {
-      if (next === 'changes') viewer?.setOptions({ ...rendererOptions, expandUnchanged: false });
+      if (next === 'changes') applyViewOptions();
     } catch (cause) { renderError = String(cause); }
+  }
+  function applyViewOptions() {
+    viewer?.setOptions({ ...rendererOptions, expandUnchanged: scope === 'full', overflow: wordWrap ? 'wrap' : 'scroll' });
+    scheduleActions();
+  }
+  function toggleWordWrap() {
+    wordWrap = !wordWrap;
+    applyViewOptions();
   }
   $effect(() => {
     response; scope; mounted;
@@ -674,9 +688,12 @@
 
 <div class="diff-view" aria-busy={loading || contentsLoading}>
   <div class="scope-bar">
-    <div class="scope-switch" aria-label="Contenido del diff">
-      <button class:active={scope === 'changes'} aria-pressed={scope === 'changes'} disabled={!canShowFull || loading || editing || editStarting} onclick={() => setScope('changes')}>Cambios</button>
-      <button class:active={scope === 'full'} aria-pressed={scope === 'full'} disabled={!canShowFull || loading || editing || editStarting} onclick={() => setScope('full')}>Archivo completo</button>
+    <div class="view-actions">
+      <div class="scope-switch" aria-label="Contenido del diff">
+        <button class:active={scope === 'changes'} aria-pressed={scope === 'changes'} disabled={!canShowFull || loading || editing || editStarting} onclick={() => setScope('changes')}>Cambios</button>
+        <button class:active={scope === 'full'} aria-pressed={scope === 'full'} disabled={!canShowFull || loading || editing || editStarting} onclick={() => setScope('full')}>Archivo completo</button>
+      </div>
+      <button class="wrap-toggle" class:active={wordWrap} aria-pressed={wordWrap} aria-label="Ajustar líneas" title={wordWrap ? 'Desactivar ajuste de línea · Word wrap' : 'Activar ajuste de línea · Word wrap'} disabled={!canShowFull || loading || editStarting || saving} onclick={toggleWordWrap}><Icon name="wrap" size={14} />Ajustar líneas</button>
     </div>
     <div class="edit-actions">
       <button disabled={!canShowFull || hasOldVersion === false || hasNewVersion === false || response?.result.mode === 'staged' || loading || contentsLoading || editStarting || saving || actionBusy} title={hasOldVersion === false ? 'No hay una versión vieja de este archivo' : hasNewVersion === false ? 'El archivo actual no existe' : response?.result.mode === 'staged' ? 'Usá Total o Sin preparar para restaurar el archivo actual' : `Restaurar todo el contenido desde ${leftLabel} en el borrador · Guardar con ⌘S`} onclick={restoreFile}><Icon name="restore" size={13} />Restaurar archivo</button>
@@ -739,8 +756,10 @@
   .diff-view { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; height: 100%; background: #1e1e1e; }
   .scope-bar { min-height: 40px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 12px; border-bottom: 1px solid #ffffff08; background: #1a1c20; font-size: 10px; }
   .scope-switch { display: flex; gap: 3px; background: #121417; padding: 3px; border-radius: 5px; }
-  .scope-switch button, .edit-actions button { padding: 5px 8px; border-radius: 4px; color: #8995aa; display: flex; align-items: center; gap: 6px; font-size: 10px; }
-  .scope-switch button.active { color: #d1d9ef; background: #2a2e38; }
+  .view-actions { display: flex; align-items: center; gap: 8px; }
+  .scope-switch button, .edit-actions button, .wrap-toggle { padding: 5px 8px; border-radius: 4px; color: #8995aa; display: flex; align-items: center; gap: 6px; font-size: 10px; }
+  .scope-switch button.active, .wrap-toggle.active { color: #d1d9ef; background: #2a2e38; }
+  .wrap-toggle:hover:not(:disabled) { background: #ffffff08; }
   .edit-actions { display: flex; align-items: center; gap: 6px; }
   .edit-actions button:hover:not(:disabled) { background: #ffffff08; }
   .edit-actions .save-button { color: #ced6ff; background: #a7b0f919; }

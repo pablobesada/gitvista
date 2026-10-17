@@ -32,6 +32,8 @@ Choose **Carpetas** to preserve the workspace folder hierarchy or **Repositorios
 
 Select a file to see the original on the left and the updated version on the right. The comparison selector supports Total (HEAD → working tree), Unstaged (index → working tree) and Staged (HEAD → index). Total may be empty when staged and unstaged changes cancel; the file stays visible so the other comparisons can be inspected.
 
+Changed fragments have stronger red/green emphasis inside the line, including long minified lines and source maps. **Ajustar líneas** toggles word wrap in both columns, including while editing. It starts off and retains its current setting while switching files during the session; wrapping changes only the display, not file contents.
+
 Choose **Cambios / Archivo completo** above the diff to show changed blocks or both complete versions. Full contents are loaded lazily and retain split alignment and virtualization. Click **Editar versión nueva** to edit the right column, then **Guardar** or **⌘S** to save to disk. The original left column stays read-only. **Cancelar** discards the edit session; unsaved drafts require confirmation before navigating, switching roots/comparisons or quitting. External refreshes preserve the draft, and saving checks the original disk version so concurrent edits are not silently replaced.
 
 **Archivo completo** includes a narrow change overview on the right: red marks show deleted lines, green marks show added lines, and a shaded frame shows the visible area. Click a mark to center its change block or click elsewhere to jump through the file. Focus the overview and use **↑ / ↓** to move between changes, **PageUp / PageDown** to scroll, or **Home / End** to reach the ends. Marks update with the current draft while editing. The overview uses one small canvas and the existing diff metadata, retaining a single virtualized code viewport.
@@ -48,6 +50,7 @@ Use **F7 / Shift+F7** to move between changes, **⌘R** to reconcile the project
 - Only the selected diff is mounted. Both the tree and code viewport are virtualized.
 - Git metadata is refreshed on filesystem events with a 200 ms debounce. Focus/manual refresh reconcile state; watcher errors are visible and do not turn a repository into “clean”.
 - Rust diff cache: 32 MiB, with byte-based eviction. The highlighter uses one worker and two entries per AST cache; large or minified content falls back to plain code.
+- Inline changes remain visible beyond the 2,000-character syntax limit. Long lines trim identical ends before character comparison, with a 32,768-character combined middle, 256-edit and 20 ms refinement budget. If refinement exceeds a budget, emphasis covers the differing middle while leaving the identical ends unmarked. The pinned Pierre adapter applies in the worker and local/editor renderer and fails explicitly if its integration point changes.
 - Full context is loaded only for the selected file, up to 10 MiB per side. Patches, command time and stdout are bounded.
 - Binary files, merge conflicts, external content filters and unsupported encodings have explicit informational states.
 - Git commands use direct arguments, NUL-delimited status and original native paths. They disable optional index locks, fsmonitor hooks, external diff and textconv. The app never runs a Git mutation or changes repository configuration.
