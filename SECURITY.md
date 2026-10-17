@@ -17,7 +17,7 @@ Do not open a public issue or PR containing exploit details, private source code
 
 ## Supported code
 
-This project is an early MVP without published binary releases or an LTS/backport policy. Security fixes target the current `main` branch. Reports about older commits are welcome, but a separate patched build for an older commit is not guaranteed. Include the exact commit so maintainers can identify the affected code.
+This project is an early MVP, with binary releases starting at v0.1.0 and no LTS/backport policy. Security fixes target the current `main` branch. Reports about older commits are welcome, but a separate patched build for an older commit is not guaranteed. Include the exact commit so maintainers can identify the affected code.
 
 There is no guaranteed response or remediation deadline. Maintainers will use the private report to clarify reproduction, discuss fixes and coordinate disclosure.
 

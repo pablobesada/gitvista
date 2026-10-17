@@ -4,6 +4,7 @@ GitVista is an early MVP focused on fast review across nested repositories. This
 
 ## Available now
 
+- Downloadable macOS Apple Silicon ZIP releases with checksums, ad hoc signatures and installation instructions.
 - Automatic nested-repo, worktree and submodule discovery, plus explicit additions under excluded directories.
 - One merged change tree, folder/peer-repository layouts, search and per-repo untracked visibility.
 - Root tabs with one active workspace and lightweight tracked-change indicators.
@@ -24,7 +25,7 @@ See [usage](usage.md) for behavior and [validation](validation.md) for measured 
 
 These need implementation and validation before they can be offered:
 
-- Downloadable macOS releases, signing/notarization and a documented release process.
+- Developer ID signing and Apple notarization for macOS releases.
 - CI checks for contributors; no automated GitHub workflow is currently configured.
 - Linux, Intel Mac and Windows compatibility work, including native watcher, renderer, clipboard and build verification.
 - A compact recovery UI for GitVista-created stashes. Recovery currently uses the displayed Git command; there is no stash-history UI.

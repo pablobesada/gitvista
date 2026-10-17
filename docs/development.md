@@ -63,7 +63,7 @@ The compiled executable also accepts a workspace path:
 target/release/gitvista --workspace /path/to/project
 ```
 
-This uses normal application preferences and may open an additional root tab. Use disposable fixtures when checking saving or cleanup. Local builds do not require an Apple signing account; public signing, notarization and downloadable releases are not provided yet.
+This uses normal application preferences and may open an additional root tab. Use disposable fixtures when checking saving or cleanup. Local builds do not require an Apple signing account. Downloadable Apple Silicon releases use ad hoc signing; Developer ID signing and notarization are not provided yet. See [installation](installation.md) and the [release process](releasing.md).
 
 ## Verification
 
