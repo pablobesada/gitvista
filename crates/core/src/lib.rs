@@ -118,6 +118,26 @@ impl ChangeEntry {
     }
 }
 
+/// Read-only confirmation summary; token changes when the repository changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashPreview {
+    pub token: String,
+    pub tracked: usize,
+    pub staged: usize,
+    pub unstaged: usize,
+    pub untracked: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashResult {
+    pub stash_oid: Option<String>,
+    pub remaining: Option<usize>,
+    /// A failed/partial cleanup must retain the backup identity and never report clean.
+    pub warning: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoState {

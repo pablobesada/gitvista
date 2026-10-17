@@ -1,9 +1,10 @@
-//! A bounded, cancellable, read-only adapter around the installed Git CLI.
+//! A bounded, cancellable query adapter around the installed Git CLI.
 //!
 //! Display paths are lossy only at the serialization boundary. Git and filesystem
 //! calls always use the original native path, obtained from NUL-delimited output.
 
 mod process;
+mod stash;
 
 use gitvista_core::{
     Cancellation, ChangeEntry, DiffContents, DiffKind, DiffMode, DiffResult, EntryKind,
@@ -76,7 +77,9 @@ impl CliGit {
             "status",
             "--porcelain=v1",
             "-z",
-            "--untracked-files=normal",
+            // Tab indicators represent tracked changes only. Full workspace
+            // status still includes individual untracked files for the tree.
+            "--untracked-files=no",
             // Inspect nested repos independently with their own filter overrides.
             "--ignore-submodules=dirty",
             "--no-renames",

@@ -1,11 +1,12 @@
 <script lang="ts">
-  import type { ChangeEntry, DiffMode } from '../lib/types';
+  import type { ChangeEntry, DiffMode, Repository } from '../lib/types';
   import { flattenTree, statusLabel, type ChangeNode, type TreeRow } from '../lib/tree';
   import Icon from './Icon.svelte';
   import RepoUntrackedToggle from './RepoUntrackedToggle.svelte';
-  let { nodes, expanded, selectedId, mode, query = '', visibility, onVisibilityChange, onToggle, onSelect }: {
+  let { nodes, expanded, selectedId, mode, query = '', visibility, onVisibilityChange, onToggle, onSelect, onRepositoryMenu }: {
     nodes: ChangeNode[]; expanded: ReadonlySet<string>; selectedId: string | null; mode: DiffMode; query?: string;
     visibility: Record<string, boolean>; onVisibilityChange: (repoId: string, show: boolean) => void;
+    onRepositoryMenu: (repository: Repository, x: number, y: number) => void;
     onToggle: (path: string) => void; onSelect: (entry: ChangeEntry) => void;
   } = $props();
   const rowHeight = 30;
@@ -52,6 +53,15 @@
     if (select && row.node.entry) onSelect(row.node.entry);
   }
   function keydown(event: KeyboardEvent) {
+    if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+      const row = rows.find(row => row.node.key === focusKey);
+      if (row?.node.repository) {
+        event.preventDefault();
+        const bounds = document.getElementById('node-' + encodeURIComponent(row.node.key))?.getBoundingClientRect();
+        onRepositoryMenu(row.node.repository, bounds?.left ?? 20, bounds?.bottom ?? 120);
+      }
+      return;
+    }
     if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
     let index = rows.findIndex(row => row.node.key === focusKey);
@@ -95,7 +105,7 @@
     <div class="tree-window" style:transform={`translateY(${start * rowHeight}px)`}>
       {#each visibleRows as row (row.node.key)}
         {@const status = row.node.entry ? statusLabel(row.node.entry, mode) : null}
-        <div class="tree-row" class:repo-group={row.node.repositoryRoot} class:selected={row.node.entry?.id === selectedId} class:keyboard-focus={focusKey === row.node.key} class:directory={row.node.directory} role="treeitem" id={'node-' + encodeURIComponent(row.node.key)} aria-label={row.node.name} aria-level={row.depth + 1} aria-expanded={row.node.directory ? expanded.has(row.node.key) || !!query.trim() : undefined} aria-selected={row.node.entry ? row.node.entry.id === selectedId : undefined} title={nodeTitle(row.node)}>
+        <div class="tree-row" class:repo-group={row.node.repositoryRoot} class:selected={row.node.entry?.id === selectedId} class:keyboard-focus={focusKey === row.node.key} class:directory={row.node.directory} role="treeitem" tabindex="-1" id={'node-' + encodeURIComponent(row.node.key)} aria-label={row.node.name} aria-level={row.depth + 1} aria-expanded={row.node.directory ? expanded.has(row.node.key) || !!query.trim() : undefined} aria-selected={row.node.entry ? row.node.entry.id === selectedId : undefined} title={nodeTitle(row.node)} oncontextmenu={event => { if (row.node.repository) { event.preventDefault(); focusKey = row.node.key; onRepositoryMenu(row.node.repository, event.clientX, event.clientY); } }}>
           <button type="button" class="tree-row-main" tabindex="-1" style:padding-left={`${12 + row.depth * 15}px`} onclick={() => activate(row)}>
           <span class="tree-disclosure">{#if row.node.directory}<Icon name={expanded.has(row.node.key) || query.trim() ? 'chevron-down' : 'chevron-right'} size={12} />{/if}</span>
           <span class="tree-file-icon" class:repo-icon={!!row.node.repository}><Icon name={row.node.repository ? 'repo' : row.node.directory ? 'folder' : 'file'} size={15} /></span>

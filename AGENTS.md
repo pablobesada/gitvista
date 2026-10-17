@@ -11,7 +11,7 @@ GitVista is a macOS-first multi-repository diff viewer with explicit working-fil
 
 ## Invariants
 
-- Git operations remain read-only. Explicit editing of the current working file uses `save_working_file`, native entry paths, disk-version checks and atomic replacement. Never edit old versions, the index, symlinks or Git metadata. Keep drafts across watcher refreshes and require an explicit discard before navigation or exit.
+- Git queries remain read-only. The only explicit Git write is the confirmed repository-level `stash_repository` action: preserve a named stash, optionally include untracked files, never ignored files or nested worktrees, and never fall back to reset/clean. Keep its native repo-ID/generation checks and close/root-switch guard. Explicit editing of the current working file uses `save_working_file`, native entry paths, disk-version checks and atomic replacement. The file editor never edits old versions, the index, symlinks or Git metadata. Keep drafts across watcher refreshes and require an explicit discard before navigation or exit.
 - Preserve staged and unstaged states; a net-empty Total comparison does not mean there are no pending changes.
 - Error/incomplete status is not “clean”. Preserve last-known entries and surface stale coverage.
 - Background budget is three Git jobs; foreground budget is one. Cancel superseded requests and reject old generations/revisions.

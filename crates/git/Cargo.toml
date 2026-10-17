@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 gitvista-core = { path = "../core" }
 libc = "0.2"
+sha2 = "0.10"
 tempfile = "3.23"
 
 [dev-dependencies]

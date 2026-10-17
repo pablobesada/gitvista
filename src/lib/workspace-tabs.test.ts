@@ -26,6 +26,23 @@ describe('workspace tabs', () => {
     snapshot.repositories[0].entries = snapshot.repositories[0].entries.map(entry => ({ ...entry, indexStatus: 'M', worktreeStatus: 'M' }));
     expect(workspaceBadge(snapshot, null).hasChanges).toBe(true);
   });
+  it('does not mark roots whose own and nested entries are all untracked', () => {
+    const snapshot = demoWorkspace('/fixture', 1);
+    snapshot.repositories.forEach(repo => repo.entries = repo.entries.map(entry => ({ ...entry, indexStatus: '?', worktreeStatus: '?' })));
+    const count = snapshot.repositories.reduce((total, repo) => total + repo.entries.length, 0);
+    expect(count).toBeGreaterThan(0);
+    expect(workspaceBadge(snapshot, null)).toEqual({ hasChanges: false, stale: false, error: null });
+    expect(snapshot.repositories.reduce((total, repo) => total + repo.entries.length, 0)).toBe(count);
+  });
+  it('keeps prepared additions and deletions with untracked replacements as changes', () => {
+    const snapshot = demoWorkspace('/fixture', 1);
+    snapshot.repositories.forEach(repo => repo.entries = []);
+    const fixture = demoWorkspace('/fixture', 1).repositories[0].entries[0];
+    for (const indexStatus of ['A', 'D', 'U']) {
+      snapshot.repositories[0].entries = [{ ...fixture, indexStatus, worktreeStatus: '?' }];
+      expect(workspaceBadge(snapshot, null).hasChanges).toBe(true);
+    }
+  });
   it('never replaces a known change with clean during scanning or errors', () => {
     const snapshot = demoWorkspace('/fixture', 1);
     snapshot.repositories.forEach(repo => repo.entries = []);

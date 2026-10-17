@@ -2,8 +2,9 @@ import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
-import type { Preferences, WorkspaceEvent, WorkspaceSnapshot, DiffMode, DiffResponse, DiffContents, EditVersion, RootBadge } from './types';
+import type { Preferences, WorkspaceEvent, WorkspaceSnapshot, DiffMode, DiffResponse, DiffContents, EditVersion, RootBadge, StashPreview, StashResult } from './types';
 import { demoContents, demoDiff, demoWorkspace, saveDemoContents } from './demo';
+import { workspaceBadge } from './workspace-tabs';
 
 export const isDesktop = isTauri();
 export const defaultPreferences: Preferences = { recentRoots: [], openedRoots: [], extraRepositories: {}, sidebarWidth: 280, expandedPaths: {}, lastRoot: null, treeView: 'folders', untrackedByRepo: {} };
@@ -70,7 +71,7 @@ export async function refreshWorkspace(): Promise<void> {
 }
 export async function getRootBadges(roots: string[], force = false): Promise<RootBadge[]> {
   if (isDesktop) return invoke('get_root_badges', { roots, force });
-  return roots.map(root => ({ root, hasChanges: demoWorkspace(root, 0).repositories.some(repo => repo.entries.length > 0), error: null }));
+  return roots.map(root => ({ root, hasChanges: workspaceBadge(demoWorkspace(root, 0), null).hasChanges, error: null }));
 }
 export async function addRepository(path: string): Promise<void> {
   if (isDesktop) return invoke('add_repository', { path });
@@ -105,4 +106,16 @@ export async function copyText(text: string): Promise<void> {
 export async function readClipboardText(): Promise<string> {
   if (isDesktop) return (await readText()) ?? '';
   return navigator.clipboard.readText();
+}
+
+// Repository writes are deliberately unavailable in browser preview.
+export async function previewRepositoryCleanup(repoId: string, generation: number): Promise<StashPreview> {
+  if (isDesktop) return invoke('preview_repository_cleanup', { repoId, generation });
+  const state = demoWorkspace(demoRoot ?? '/preview/oojs', demoGeneration).repositories.find(state => state.repository.id === repoId);
+  const entries = state?.entries ?? [];
+  return { token: 'preview', tracked: entries.filter(entry => entry.indexStatus !== '?').length, staged: entries.filter(entry => !['.', '?'].includes(entry.indexStatus)).length, unstaged: entries.filter(entry => entry.indexStatus !== '?' && entry.worktreeStatus !== '.').length, untracked: entries.filter(entry => entry.indexStatus === '?').length };
+}
+export async function stashRepository(repoId: string, generation: number, token: string, includeUntracked: boolean): Promise<StashResult> {
+  if (isDesktop) return invoke('stash_repository', { repoId, generation, token, includeUntracked });
+  throw new Error('La limpieza está disponible en la aplicación de escritorio. La vista previa no modifica archivos.');
 }

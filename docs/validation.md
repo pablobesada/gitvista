@@ -4,7 +4,7 @@ Reference machine: Apple Silicon, 32 GiB RAM, macOS 26.6, local SSD, Apple Git 2
 
 ## Correctness
 
-- Type checking: zero errors and warnings; Clippy passes with warnings denied. All 39 Rust tests and 45 frontend tests pass.
+- Type checking: zero errors and warnings; Clippy passes with warnings denied. All 44 Rust tests and 56 frontend tests pass.
 - Frontend tests: tree discovery/merging, comparison filtering, 100,000 sibling rows, gitlink metadata, duplicate path ownership, distinct native names with identical display labels, selection/copy, native substrings, context hydration and external-change rejection.
 - Rust tests: real Git fixtures for additions/deletions/renames, staged+unstaged cancellation, unborn HEAD, intent-to-add, submodules, worktrees/gitfiles, odd/non-UTF-8 paths, unreadable discovery subtrees, symlinks, branch-conditional filters, limits and child-process cancellation.
 - Runtime integration: actual Tauri IPC serialization and FSEvents; selective updates retain unaffected repos, explicit excluded-folder repos are watched, writes during baseline are reconciled, and root switching cancels old work.
@@ -74,7 +74,7 @@ Browser QA verifies red/green marks, click-to-block navigation, keyboard navigat
 
 ## Root-tab change badges — 2026-10-13
 
-The active badge uses raw workspace entries independently of comparison mode, search and hidden untracked entries. Inactive roots retain only scalar badge results, checked on opening/switching roots, focus or explicit refresh. Cached checks expire after 60 seconds but do not schedule a timer. A single cancellable badge probe shares the three-job background budget; root work is limited to five seconds and status to two seconds. Native blur cancels the probe. No inactive-root watcher, file snapshot or patch is retained.
+The active badge uses tracked workspace entries independently of comparison mode and search. Untracked-only entries do not light the dot, regardless of their tree visibility. Inactive roots retain only scalar badge results, checked on opening/switching roots, focus or explicit refresh. Cached checks expire after 60 seconds but do not schedule a timer. A single cancellable badge probe shares the three-job background budget; root work is limited to five seconds and status to two seconds. Native blur cancels the probe. No inactive-root watcher, file snapshot or patch is retained.
 
 Validation passes: 54 frontend tests, 43 Rust tests, Clippy with warnings denied, Svelte checks and the release app bundle. Fixture tests verify ignored nested repositories, explicitly added generated-directory repositories, subdirectory scope, cached/forced refresh, unknown errors, filter suppression, staged/unstaged cancellation, unchanged Git index/config and releasing both job permits on cancellation. Querying dormant roots leaves the active workspace generation and entries unchanged. Browser QA checks both active/inactive red dots and preservation while filtering all entries away. Native WebKit QA displays change indicators for `oojs`, `oojs2` and `oojs-skills` without switching to the inactive roots.
 
@@ -105,3 +105,23 @@ target/release/gitvista --benchmark /tmp/new-gitvista-100k 10
 The fixture generator rejects existing destinations. Public signing/notarization, Intel builds, Windows and Linux are outside this macOS Apple Silicon MVP release.
 
 For idle process accounting, identify the app PID and its newly created WebContent/GPU/Networking PIDs at launch, then run `python3 scripts/profile-idle.py MAIN_PID GPU_PID NETWORK_PID CONTENT_PID --seconds 30 --workspace oojs`. The script includes descendant processes such as transient Git jobs; CPU is the mean of `ps`-reported percentages sampled every second. Run on a quiet machine to avoid attributing another app's new WebKit processes to GitVista.
+
+## Tracked-only root indicators — 2026-10-13
+
+Both active snapshots and inactive-root probes ignore untracked-only changes. The preview reuses the same snapshot predicate. Full status still returns untracked files for the tree. Prepared additions, tracked deletions with untracked replacements, nested tracked changes and staged/unstaged cancellation still light the dot. Unknown or failed coverage remains explicit.
+
+Validation: 56 frontend tests and 44 Rust tests pass, with clean type checking and Clippy. Regression fixtures cover untracked-only unborn repositories, normal and nested repos, subdirectory roots, adding a file to the index, retained tree entries and unchanged Git index/config bytes.
+
+Native WebKit QA with the final release bundle shows no change dot for an untracked-only root and nested repository, with their files both visible and hidden. Modifying the nested tracked file lights the dot; restoring its original contents clears it. Switching away retains the correct inactive badge. Fixture index/config checksums remain unchanged. The test tab was closed and the user's `oojs`, `oojs2` and `oojs-skills` tabs were preserved, with `oojs2` active and its change indicator cleared.
+
+## Repository stash cleanup — 2026-10-17
+
+The context menu supports both folder and repository tree layouts, Escape/outside dismissal and keyboard invocation. Confirmation reports the whole repository independently of filtering, asks whether to include untracked files, and guards existing editor drafts. Browser QA verified both layouts, checkbox state, cancellation and the explicit desktop-only preview error; no browser write is simulated.
+
+Isolated native integration tests verify staged/unstaged/untracked round trips using `stash apply --index`, ignored-file and independent nested-repo preservation, linked-worktree scope, stale preview/generation rejection, native-ID lookup, editor and close/root-switch guards, watcher refresh, clean/no-op behavior, unborn/in-progress/filter rejection, an existing index lock, and preserving the created stash identity after a simulated partial failure. Parent cleanup also disables configured recursive submodule operations. Tests mutate only temporary fixtures. Git's inherited literal-pathspec setting was found to prevent untracked cleanup despite a successful stash; the mutation explicitly disables that setting while accepting no frontend pathspec arguments.
+
+Native WebKit QA ran in a separately bundled `io.gitvista.cleanup-qa` instance, with independent preferences and temporary root/child repos. Right-clicking the folder-layout root saved staged, working and untracked contents, restored HEAD and refreshed the tree. Child file/index/config and ignored-file checksums stayed identical. In the independent repository layout, hidden untracked files were still counted in confirmation; opting out preserved them. A changed disk version after confirmation was rejected without creating a stash. A dirty editor showed the existing discard guard; continuing preserved the exact draft and aborted cleanup. The displayed recovery command was exercised against the fixture's stash ID and restored staged/working contents with `--index`, while leaving the stash and parent repo intact. The QA instance was closed; the user's app/session was not restarted or modified. New cleanup latency/RAM percentiles are not benchmarked.
+
+Repository-cleanup validation: 65 frontend tests and 55 Rust tests pass, `npm run check` reports no errors/warnings, and Clippy passes with warnings denied. Native-path fixtures cover Unicode, quotes and newline-containing repo/file names on macOS; invalid UTF-8 filesystem names are exercised by the same test only on other Unix platforms because APFS rejects them. Read-only previews honor workspace cancellation.
+
+The final normal release build (`npm run bundle`) succeeds and produces `target/release/bundle/macos/GitVista.app` with identifier `io.gitvista.desktop` (9.20 MiB). The QA build used its own identifier and preferences; the running user session was left open.

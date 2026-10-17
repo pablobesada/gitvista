@@ -252,6 +252,8 @@ async fn dormant_root_badges_find_ignored_nested_repos_and_cache_only_summary() 
         Some(true)
     );
     fs::write(nested.join("change.txt"), "baseline\n").unwrap();
+    fs::write(dormant.join("untracked.txt"), "new\n").unwrap();
+    fs::write(nested.join("untracked.txt"), "new\n").unwrap();
     // Focus within the TTL needs no new Git work, even if the filesystem changed.
     assert_eq!(
         runtime.root_badges(roots.clone(), false).await.unwrap()[0].has_changes,
@@ -306,8 +308,15 @@ async fn badge_errors_are_unknown_and_subdirectory_roots_are_scoped() {
     );
     fs::write(child.join("untracked"), "new\n").unwrap();
     assert_eq!(
+        runtime.root_badges(roots.clone(), true).await.unwrap()[0].has_changes,
+        Some(false),
+        "Untracked-only entries do not light the tab"
+    );
+    git(&parent, &["add", "folder/untracked"]);
+    assert_eq!(
         runtime.root_badges(roots, true).await.unwrap()[0].has_changes,
-        Some(true)
+        Some(true),
+        "Adding the file to the index lights the tab"
     );
     let missing = runtime
         .root_badges(
@@ -764,5 +773,56 @@ async fn writes_during_baseline_are_reconciled_and_root_switch_cancels_old_scans
             .unwrap()
             .generation,
         switched.generation
+    );
+}
+
+#[tokio::test]
+async fn repository_cleanup_uses_native_id_guards_generation_and_editor_then_refreshes() {
+    let fixture = TempDir::new().unwrap();
+    let root = repository(&fixture.path().join("workspace"));
+    let nested = repository(&root.join("child"));
+    let runtime = Runtime::new(fixture.path().join("preferences.json"));
+    let (channel, mut events) = Events::channel();
+    runtime
+        .open(root.to_string_lossy().into_owned(), channel)
+        .await
+        .unwrap();
+    events.done().await;
+    let generation = events.snapshot.as_ref().unwrap().generation;
+    let repo_id = events.repository(&nested).repository.id.clone();
+    assert!(runtime
+        .stash_preview("invented-display-path".into(), generation)
+        .await
+        .is_err());
+    assert!(runtime
+        .stash_preview(repo_id.clone(), generation + 1)
+        .await
+        .is_err());
+    let preview = runtime
+        .stash_preview(repo_id.clone(), generation)
+        .await
+        .unwrap();
+    runtime.set_editor_active(true);
+    assert!(runtime
+        .stash_repository(repo_id.clone(), generation, preview.token.clone(), true)
+        .await
+        .unwrap_err()
+        .contains("editar"));
+    runtime.set_editor_active(false);
+    let result = runtime
+        .stash_repository(repo_id, generation, preview.token, true)
+        .await
+        .unwrap();
+    assert!(result.warning.is_none(), "{:?}", result.warning);
+    assert!(result.stash_oid.is_some());
+    events.done().await;
+    assert!(events.repository(&nested).entries.is_empty());
+    assert_eq!(
+        fs::read_to_string(root.join("change.txt")).unwrap(),
+        "initial change\n"
+    );
+    assert_eq!(
+        fs::read_to_string(nested.join("change.txt")).unwrap(),
+        "baseline\n"
     );
 }

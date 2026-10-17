@@ -68,13 +68,37 @@ async fn save_working_file(
     runtime.save_file(entry_id, version, contents).await
 }
 #[tauri::command]
+async fn preview_repository_cleanup(
+    repo_id: String,
+    generation: u64,
+    runtime: State<'_, Runtime>,
+) -> Result<gitvista_core::StashPreview, String> {
+    runtime.stash_preview(repo_id, generation).await
+}
+#[tauri::command]
+async fn stash_repository(
+    repo_id: String,
+    generation: u64,
+    token: String,
+    include_untracked: bool,
+    runtime: State<'_, Runtime>,
+) -> Result<gitvista_core::StashResult, String> {
+    runtime
+        .stash_repository(repo_id, generation, token, include_untracked)
+        .await
+}
+#[tauri::command]
 fn set_editor_active(active: bool, runtime: State<'_, Runtime>) {
     runtime.set_editor_active(active);
 }
 #[tauri::command]
-fn exit_application(app: tauri::AppHandle, runtime: State<'_, Runtime>) {
+fn exit_application(app: tauri::AppHandle, runtime: State<'_, Runtime>) -> Result<(), String> {
+    if runtime.repository_write_active() {
+        return Err("Esperá a que termine la limpieza del repositorio.".into());
+    }
     runtime.set_editor_active(false);
     app.exit(0);
+    Ok(())
 }
 #[tauri::command]
 fn get_preferences(runtime: State<'_, Runtime>) -> Preferences {
@@ -154,6 +178,8 @@ pub fn run() {
             get_diff,
             load_diff_contents,
             save_working_file,
+            preview_repository_cleanup,
+            stash_repository,
             set_editor_active,
             exit_application,
             get_preferences,

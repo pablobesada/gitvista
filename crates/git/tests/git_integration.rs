@@ -74,6 +74,53 @@ fn git(path: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn presence_probe_ignores_untracked_files_but_keeps_tracked_and_staged_changes() {
+    let fixture = Fixture::new();
+    fixture.write("tracked.txt", "base\n");
+    let changed = || {
+        fixture
+            .git
+            .has_changes(fixture.root(), fixture.root(), &fixture.control)
+            .unwrap()
+    };
+    assert!(
+        !changed(),
+        "Unborn repositories with only untracked files do not light a tab"
+    );
+    git(fixture.root(), &["add", "tracked.txt"]);
+    assert!(changed(), "Prepared additions light the tab");
+    fixture.commit();
+    fixture.write("untracked.txt", "new\n");
+    let repo = fixture.repository();
+    let index = fs::read(repo.git_directory().join("index")).unwrap();
+    let config = fs::read(repo.common_directory().join("config")).unwrap();
+    assert!(!changed());
+    let entries = fixture
+        .git
+        .status(&repo, fixture.root(), &fixture.control)
+        .unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "Full status still includes the untracked file"
+    );
+    assert_eq!(entries[0].index_status, "?");
+    assert_eq!(fs::read(repo.git_directory().join("index")).unwrap(), index);
+    assert_eq!(
+        fs::read(repo.common_directory().join("config")).unwrap(),
+        config
+    );
+    fs::remove_file(fixture.root().join("tracked.txt")).unwrap();
+    assert!(changed(), "Working deletions light the tab");
+    fixture.write("tracked.txt", "base\n");
+    git(fixture.root(), &["rm", "--cached", "--", "tracked.txt"]);
+    assert!(
+        changed(),
+        "A prepared deletion with an untracked replacement is a tracked change"
+    );
+}
+
+#[test]
 fn discovery_keeps_nested_repositories_and_explicit_exclusions() {
     let outer = Fixture::new();
     init(&outer.root().join("packages/nested"));
@@ -869,4 +916,377 @@ fn cancellation_kills_and_reaps_a_running_process() {
         .parse()
         .unwrap();
     assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+}
+
+#[test]
+fn confirmed_stash_round_trips_index_worktree_and_untracked_without_touching_children() {
+    let fixture = Fixture::new();
+    fixture.write("tracked.txt", "base\n");
+    fixture.write(".gitignore", "ignored/\n");
+    fixture.commit();
+    fixture.write("tracked.txt", "prepared\n");
+    git(fixture.root(), &["add", "--", "tracked.txt"]);
+    fixture.write("tracked.txt", "working\n");
+    fixture.write("new ü 'file.txt", "untracked\n");
+    fs::create_dir(fixture.root().join("ignored")).unwrap();
+    fixture.write("ignored/keep.txt", "ignored\n");
+    let child = fixture.root().join("nested");
+    init(&child);
+    fs::write(child.join("keep.txt"), "child baseline\n").unwrap();
+    git(&child, &["add", "."]);
+    git(&child, &["commit", "-qm", "child"]);
+    fs::write(child.join("keep.txt"), "child changes\n").unwrap();
+    fs::write(child.join("new.txt"), "child untracked\n").unwrap();
+    let child_index = fs::read(child.join(".git/index")).unwrap();
+    let repo = fixture.repository();
+    let config = fs::read(repo.common_directory().join("config")).unwrap();
+    let head = git(fixture.root(), &["rev-parse", "HEAD"]);
+    let preview = fixture.git.stash_preview(&repo, &fixture.control).unwrap();
+    assert_eq!(
+        (
+            preview.tracked,
+            preview.staged,
+            preview.unstaged,
+            preview.untracked
+        ),
+        (1, 1, 1, 1)
+    );
+    let result = fixture
+        .git
+        .stash_repository(&repo, &preview.token, true)
+        .unwrap();
+    assert!(result.warning.is_none(), "{:?}", result.warning);
+    assert_eq!(result.remaining, Some(0));
+    let oid = result.stash_oid.unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root().join("tracked.txt")).unwrap(),
+        "base\n"
+    );
+    assert!(!fixture.root().join("new ü 'file.txt").exists());
+    assert_eq!(
+        fs::read_to_string(child.join("keep.txt")).unwrap(),
+        "child changes\n"
+    );
+    assert!(child.join("new.txt").exists());
+    assert_eq!(fs::read(child.join(".git/index")).unwrap(), child_index);
+    assert!(fixture.root().join("ignored/keep.txt").exists());
+    assert_eq!(git(fixture.root(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        fs::read(repo.common_directory().join("config")).unwrap(),
+        config
+    );
+    git(fixture.root(), &["stash", "apply", "--index", &oid]);
+    assert_eq!(git(fixture.root(), &["show", ":tracked.txt"]), "prepared\n");
+    assert_eq!(
+        fs::read_to_string(fixture.root().join("tracked.txt")).unwrap(),
+        "working\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root().join("new ü 'file.txt")).unwrap(),
+        "untracked\n"
+    );
+    assert_eq!(
+        git(fixture.root(), &["rev-parse", "refs/stash"]).trim(),
+        oid
+    );
+}
+
+#[test]
+fn stash_option_keeps_untracked_and_rejects_stale_confirmation() {
+    let fixture = Fixture::new();
+    fixture.write("file.txt", "base\n");
+    fixture.commit();
+    fixture.write("file.txt", "changed\n");
+    fixture.write("new.txt", "keep\n");
+    let repo = fixture.repository();
+    let old = fixture.git.stash_preview(&repo, &fixture.control).unwrap();
+    fixture.write("file.txt", "changed again\n");
+    assert!(fixture
+        .git
+        .stash_repository(&repo, &old.token, false)
+        .unwrap_err()
+        .contains("cambió"));
+    assert_eq!(
+        fs::read_to_string(fixture.root().join("file.txt")).unwrap(),
+        "changed again\n"
+    );
+    assert!(git(fixture.root(), &["stash", "list"]).is_empty());
+    let preview = fixture.git.stash_preview(&repo, &fixture.control).unwrap();
+    let result = fixture
+        .git
+        .stash_repository(&repo, &preview.token, false)
+        .unwrap();
+    assert!(result.warning.is_none(), "{:?}", result.warning);
+    assert!(fixture.root().join("new.txt").exists());
+    assert_eq!(
+        git(
+            fixture.root(),
+            &["show", &format!("{}:file.txt", result.stash_oid.unwrap())]
+        ),
+        "changed again\n"
+    );
+}
+
+#[test]
+fn stash_handles_untracked_only_and_preserves_existing_stashes_on_noop() {
+    let fixture = Fixture::new();
+    fixture.write("file.txt", "base\n");
+    fixture.commit();
+    fixture.write("new.txt", "new\n");
+    let repo = fixture.repository();
+    let preview = fixture.git.stash_preview(&repo, &fixture.control).unwrap();
+    assert!(fixture
+        .git
+        .stash_repository(&repo, &preview.token, false)
+        .is_err());
+    let result = fixture
+        .git
+        .stash_repository(&repo, &preview.token, true)
+        .unwrap();
+    assert!(result.warning.is_none(), "{:?}", result.warning);
+    assert!(!fixture.root().join("new.txt").exists());
+    let clean = fixture.git.stash_preview(&repo, &fixture.control).unwrap();
+    assert!(fixture
+        .git
+        .stash_repository(&repo, &clean.token, true)
+        .is_err());
+    assert_eq!(
+        git(fixture.root(), &["rev-parse", "refs/stash"]).trim(),
+        result.stash_oid.unwrap()
+    );
+}
+
+#[test]
+fn stash_rejects_unborn_in_progress_and_filtered_repositories_without_writes() {
+    let fixture = Fixture::new();
+    fixture.write("file.txt", "base\n");
+    assert!(fixture
+        .git
+        .stash_preview(&fixture.repository(), &fixture.control)
+        .unwrap_err()
+        .contains("commit"));
+    fixture.commit();
+    fixture.write("file.txt", "changed\n");
+    let repo = fixture.repository();
+    let index = fs::read(repo.git_directory().join("index")).unwrap();
+    fs::write(
+        repo.git_directory().join("MERGE_HEAD"),
+        git(fixture.root(), &["rev-parse", "HEAD"]),
+    )
+    .unwrap();
+    assert!(fixture
+        .git
+        .stash_preview(&repo, &fixture.control)
+        .unwrap_err()
+        .contains("curso"));
+    fs::remove_file(repo.git_directory().join("MERGE_HEAD")).unwrap();
+    git(
+        fixture.root(),
+        &["config", "filter.untrusted.clean", "does-not-exist"],
+    );
+    assert!(fixture
+        .git
+        .stash_preview(&repo, &fixture.control)
+        .unwrap_err()
+        .contains("filtros"));
+    assert_eq!(fs::read(repo.git_directory().join("index")).unwrap(), index);
+    assert!(git(fixture.root(), &["stash", "list"]).is_empty());
+    assert_eq!(
+        fs::read_to_string(fixture.root().join("file.txt")).unwrap(),
+        "changed\n"
+    );
+}
+
+#[test]
+fn stash_in_a_linked_worktree_does_not_clean_the_main_worktree() {
+    let fixture = Fixture::new();
+    fixture.write("file.txt", "base\n");
+    fixture.commit();
+    let worktree_parent = tempdir().unwrap();
+    let worktree = worktree_parent.path().join("linked");
+    git(
+        fixture.root(),
+        &[
+            "worktree",
+            "add",
+            "-qb",
+            "linked",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    fixture.write("file.txt", "main changes\n");
+    fs::write(worktree.join("file.txt"), "linked changes\n").unwrap();
+    let repo = fixture
+        .git
+        .discover(&worktree, &[], &fixture.control)
+        .unwrap()
+        .remove(0);
+    let preview = fixture.git.stash_preview(&repo, &fixture.control).unwrap();
+    let result = fixture
+        .git
+        .stash_repository(&repo, &preview.token, true)
+        .unwrap();
+    assert!(result.warning.is_none(), "{:?}", result.warning);
+    assert_eq!(
+        fs::read_to_string(worktree.join("file.txt")).unwrap(),
+        "base\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root().join("file.txt")).unwrap(),
+        "main changes\n"
+    );
+}
+
+#[test]
+fn failed_stash_keeps_previous_backup_and_never_reports_it_as_new() {
+    let fixture = Fixture::new();
+    fixture.write("file.txt", "base\n");
+    fixture.commit();
+    fixture.write("file.txt", "old changes\n");
+    git(fixture.root(), &["stash", "push", "-qm", "existing backup"]);
+    let old = git(fixture.root(), &["rev-parse", "refs/stash"]);
+    fixture.write("file.txt", "new changes\n");
+    let repo = fixture.repository();
+    let preview = fixture.git.stash_preview(&repo, &fixture.control).unwrap();
+    fs::write(
+        repo.git_directory().join("index.lock"),
+        "owned by another Git client",
+    )
+    .unwrap();
+    let result = fixture
+        .git
+        .stash_repository(&repo, &preview.token, true)
+        .unwrap();
+    assert!(result.stash_oid.is_none());
+    assert!(result.warning.is_some());
+    assert_eq!(git(fixture.root(), &["rev-parse", "refs/stash"]), old);
+    assert_eq!(
+        fs::read_to_string(fixture.root().join("file.txt")).unwrap(),
+        "new changes\n"
+    );
+    assert!(repo.git_directory().join("index.lock").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_stash_failure_returns_the_created_backup_instead_of_losing_its_identity() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    fixture.write("file.txt", "base\n");
+    fixture.commit();
+    fixture.write("file.txt", "saved changes\n");
+    let wrapper_directory = tempdir().unwrap();
+    let wrapper = wrapper_directory.path().join("git-wrapper");
+    fs::write(&wrapper, "#!/usr/bin/python3\nimport subprocess,sys\nr=subprocess.run(['git',*sys.argv[1:]])\nif 'stash' in sys.argv and 'push' in sys.argv and r.returncode == 0:\n print('simulated failure after saving',file=sys.stderr)\n sys.exit(1)\nsys.exit(r.returncode)\n").unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let backend = CliGit::with_executable(wrapper.as_os_str());
+    let repo = fixture.repository();
+    let preview = backend.stash_preview(&repo, &fixture.control).unwrap();
+    let result = backend
+        .stash_repository(&repo, &preview.token, true)
+        .unwrap();
+    assert!(result.warning.unwrap().contains("simulated failure"));
+    let oid = result.stash_oid.unwrap();
+    assert_eq!(
+        git(fixture.root(), &["show", &format!("{oid}:file.txt")]),
+        "saved changes\n"
+    );
+}
+
+#[test]
+fn stash_parent_never_recurses_into_a_submodule_even_when_configured() {
+    let fixture = Fixture::new();
+    let source = Fixture::new();
+    fixture.write("base.txt", "base\n");
+    fixture.commit();
+    source.write("file.txt", "base\n");
+    source.commit();
+    git(
+        fixture.root(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--quiet",
+            source.root().to_str().unwrap(),
+            "module",
+        ],
+    );
+    fixture.commit();
+    git(fixture.root(), &["config", "submodule.recurse", "true"]);
+    let child = fixture.root().join("module");
+    fs::write(child.join("file.txt"), "child changes\n").unwrap();
+    fs::write(child.join("new.txt"), "child new\n").unwrap();
+    fixture.write("base.txt", "parent changes\n");
+    let repo = fixture.repository();
+    let child_repo = fixture
+        .git
+        .discover(fixture.root(), &[], &fixture.control)
+        .unwrap()
+        .into_iter()
+        .find(|repo| repo.directory() == child.canonicalize().unwrap())
+        .unwrap();
+    let index = fs::read(child_repo.git_directory().join("index")).unwrap();
+    let preview = fixture.git.stash_preview(&repo, &fixture.control).unwrap();
+    let result = fixture
+        .git
+        .stash_repository(&repo, &preview.token, true)
+        .unwrap();
+    assert!(result.warning.is_none(), "{:?}", result.warning);
+    assert_eq!(
+        fs::read_to_string(child.join("file.txt")).unwrap(),
+        "child changes\n"
+    );
+    assert!(child.join("new.txt").exists());
+    assert_eq!(
+        fs::read(child_repo.git_directory().join("index")).unwrap(),
+        index
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root().join("base.txt")).unwrap(),
+        "base\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stash_uses_native_repository_paths_and_honors_cancelled_previews() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let fixture = tempdir().unwrap();
+    // APFS rejects invalid UTF-8 names; exercise those bytes on other Unix filesystems.
+    let root_name = if cfg!(target_os = "macos") {
+        OsString::from("repo ü '\n")
+    } else {
+        OsString::from_vec(b"repo-\xff".to_vec())
+    };
+    let root = fixture.path().join(root_name);
+    init(&root);
+    let name = if cfg!(target_os = "macos") {
+        OsString::from("file ü '\n")
+    } else {
+        OsString::from_vec(b"file-\xfe".to_vec())
+    };
+    fs::write(root.join(&name), "base\n").unwrap();
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "-qm", "fixture"]);
+    fs::write(root.join(&name), "changed\n").unwrap();
+    let backend = CliGit::new();
+    let control = Cancellation::new();
+    let repo = backend.discover(&root, &[], &control).unwrap().remove(0);
+    let cancelled = Cancellation::new();
+    cancelled.cancel();
+    assert!(backend.stash_preview(&repo, &cancelled).is_err());
+    let preview = backend.stash_preview(&repo, &control).unwrap();
+    let result = backend
+        .stash_repository(&repo, &preview.token, true)
+        .unwrap();
+    assert!(result.warning.is_none(), "{:?}", result.warning);
+    assert_eq!(fs::read_to_string(root.join(&name)).unwrap(), "base\n");
+    git(
+        &root,
+        &["stash", "apply", "--index", &result.stash_oid.unwrap()],
+    );
+    assert_eq!(fs::read_to_string(root.join(&name)).unwrap(), "changed\n");
 }

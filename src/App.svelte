@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import RepositoryMenu from './components/RepositoryMenu.svelte';
+  import RepositoryCleanup from './components/RepositoryCleanup.svelte';
   import ChangeTree from './components/ChangeTree.svelte';
   import DiffView from './components/DiffView.svelte';
   import Icon from './components/Icon.svelte';
@@ -8,8 +10,11 @@
   import { addRepository, chooseRepository, chooseRoot, closeWorkspace, defaultPreferences, exitApplication, getDiff, getPreferences, getRootBadges, isDesktop, loadDiffContents, onExitRequested, openWorkspace, refreshWorkspace, savePreferences } from './lib/bridge';
   import { canonicalizeTab, closeTab, restoreRoots, workspaceBadge } from './lib/workspace-tabs';
   import { allEntries, buildChangeTree, directoryPaths, hiddenUntrackedCount, isUntracked } from './lib/tree';
-  import type { ChangeEntry, DiffContents, DiffMode, DiffResponse, Preferences, RootBadgeState, TreeView, WorkspaceEvent, WorkspaceSnapshot } from './lib/types';
+  import type { ChangeEntry, DiffContents, DiffMode, DiffResponse, Preferences, Repository, RootBadgeState, TreeView, WorkspaceEvent, WorkspaceSnapshot } from './lib/types';
 
+  let repositoryMenu = $state<{ repository: Repository; x: number; y: number } | null>(null);
+  let cleanup = $state<{ repository: Repository; generation: number } | null>(null);
+  let cleaning = $state(false);
   let preferences = $state<Preferences>(structuredClone(defaultPreferences));
   let snapshot = $state.raw<WorkspaceSnapshot | null>(null);
   let rootBadges = $state.raw<Record<string, RootBadgeState>>({});
@@ -104,7 +109,15 @@
     if (snapshot) preferences.expandedPaths = { ...preferences.expandedPaths, [expansionKey(snapshot.root)]: [] };
     persist();
   }
-  async function leaveEditor() { return !editorActive || await diffView?.canLeave() === true; }
+  async function leaveEditor() { if (cleaning || cleanup) return false; return !editorActive || await diffView?.canLeave() === true; }
+  function openRepositoryMenu(repository: Repository, x: number, y: number) {
+    if (!cleaning && !cleanup) repositoryMenu = { repository, x, y };
+  }
+  async function beginCleanup(repository: Repository) {
+    repositoryMenu = null;
+    if (!await leaveEditor() || !snapshot) return;
+    cleanup = { repository, generation: snapshot.generation };
+  }
   async function selectEntry(entry: ChangeEntry) {
     if (selected?.id === entry.id || !await leaveEditor()) return;
     selected = entry;
@@ -280,6 +293,7 @@
     }
   }
   async function closeRoot(root: string) {
+    if (cleanup || cleaning) return;
     if (root === snapshot?.root && !await leaveEditor()) return;
     const next = closeTab(preferences.openedRoots, snapshot?.root ?? null, root);
     preferences.openedRoots = next.roots;
@@ -303,10 +317,12 @@
     persist();
   }
   async function browseRoot() {
+    if (cleanup || cleaning) return;
     try { const root = await chooseRoot(); if (root) await openRoot(root); }
     catch (error) { showToast(String(error)); }
   }
   async function browseRepository() {
+    if (cleanup || cleaning) return;
     try {
       const path = await chooseRepository();
       if (!path) return;
@@ -332,7 +348,7 @@
     } catch (error) { showToast(`No se pudo copiar la selección: ${String(error)}`); }
   }
   function keydown(event: KeyboardEvent) {
-    if (event.defaultPrevented) return;
+    if (event.defaultPrevented || cleanup || repositoryMenu) return;
     const command = event.metaKey || event.ctrlKey;
     if (command && event.key.toLowerCase() === 'o') { event.preventDefault(); void browseRoot(); }
     else if (command && event.key.toLowerCase() === 'p') { event.preventDefault(); searchInput?.focus(); searchInput?.select(); }
@@ -405,6 +421,7 @@
     let removeExitListener: (() => void) | undefined;
     let exiting = false;
     void onExitRequested(() => {
+      if (cleaning) { showToast('Esperá a que termine la limpieza del repositorio.'); return; }
       if (exiting) return;
       exiting = true;
       void (async () => {
@@ -473,8 +490,8 @@
             <button class:active={preferences.treeView === 'repositories'} aria-pressed={preferences.treeView === 'repositories'} onclick={() => setTreeView('repositories')} title="Mostrar cada repositorio al mismo nivel"><Icon name="repo" size={13} />Repositorios</button>
           </div>
         </div>
-        {#if preferences.treeView === 'folders'}<div class="project-row" title={snapshot.root}><Icon name={rootRepo ? 'repo' : 'folder-open'} size={16} /><span>{rootName}</span>{#if rootRepo?.branch}<span class="project-branch"><Icon name="branch" size={12} />{rootRepo.branch}</span>{/if}{#if rootRepo}<RepoUntrackedToggle repository={rootRepo} show={preferences.untrackedByRepo[rootRepo.id] !== false} onToggle={setUntrackedVisibility} />{/if}</div>{/if}
-        {#if tree.length}<ChangeTree bind:this={changeTree} nodes={tree} {expanded} selectedId={selected?.id ?? null} {mode} {query} visibility={preferences.untrackedByRepo} onVisibilityChange={setUntrackedVisibility} onToggle={togglePath} onSelect={selectEntry} />
+        {#if preferences.treeView === 'folders'}<div class="project-row" role="group" aria-label="Repositorio raíz" title={snapshot.root} oncontextmenu={event => { if (rootRepo) { event.preventDefault(); openRepositoryMenu(rootRepo, event.clientX, event.clientY); } }}><Icon name={rootRepo ? 'repo' : 'folder-open'} size={16} /><span>{rootName}</span>{#if rootRepo?.branch}<span class="project-branch"><Icon name="branch" size={12} />{rootRepo.branch}</span>{/if}{#if rootRepo}<RepoUntrackedToggle repository={rootRepo} show={preferences.untrackedByRepo[rootRepo.id] !== false} onToggle={setUntrackedVisibility} />{/if}</div>{/if}
+        {#if tree.length}<ChangeTree bind:this={changeTree} nodes={tree} {expanded} selectedId={selected?.id ?? null} {mode} {query} visibility={preferences.untrackedByRepo} onVisibilityChange={setUntrackedVisibility} onToggle={togglePath} onSelect={selectEntry} onRepositoryMenu={openRepositoryMenu} />
         {:else}<div class="sidebar-empty"><span class="empty-tree-icon"><Icon name={snapshot.scanning ? 'refresh' : staleCount > 0 || workspaceError ? 'warning' : query ? 'search' : hiddenCount ? 'file' : 'check'} size={24} /></span><strong>{snapshot.scanning ? 'Buscando cambios…' : staleCount > 0 || workspaceError ? 'Cambios sin verificar' : query ? 'Sin coincidencias' : hiddenCount ? 'Sin archivos visibles' : 'Todo al día'}</strong><p>{snapshot.scanning ? 'Los repositorios aparecen a medida que se consultan.' : staleCount > 0 || workspaceError ? 'No pudimos consultar todos los repositorios. Actualizá para verificar los cambios.' : query ? 'Probá con parte de la ruta o del nombre del repositorio.' : hiddenCount ? `${hiddenCount} archivos sin seguimiento están ocultos. Usá el ojo del repositorio para mostrarlos.` : mode === 'staged' ? 'No hay cambios preparados.' : 'No hay archivos modificados en esta vista.'}</p>{#if query}<button class="text-button" onclick={() => query = ''}>Limpiar búsqueda</button>{/if}</div>{/if}
         <div class="sidebar-bottom"><button onclick={browseRepository} class="add-repo-button"><Icon name="plus" size={14} /><span>Agregar repositorio</span></button><span title="Repositorios descubiertos">{states.length} repos</span></div>
       </aside>
@@ -501,6 +518,8 @@
       <span class="welcome-footnote">Ligero por diseño. Revisá cambios y editá cuando lo necesites.</span>
     </main>
   {/if}
+  {#if repositoryMenu}<RepositoryMenu x={repositoryMenu.x} y={repositoryMenu.y} repository={repositoryMenu.repository} onClose={() => repositoryMenu = null} onCleanup={beginCleanup} />{/if}
+  {#if cleanup}<RepositoryCleanup repository={cleanup.repository} generation={cleanup.generation} onBusy={busy => cleaning = busy} onClose={() => { cleanup = null; cleaning = false; }} />{/if}
   {#if toast}<div class="toast" role="status"><Icon name="check" size={16} />{toast}</div>{/if}
   {#if recentMenu}<button class="menu-backdrop" aria-label="Cerrar proyectos recientes" tabindex="-1" onclick={() => recentMenu = false}></button>{/if}
 </div>

@@ -27,6 +27,7 @@ struct Inner {
     cache: Mutex<ByteLru<String, DiffResult>>,
     channel: Mutex<Option<Channel<WorkspaceEvent>>>,
     editor_active: AtomicBool,
+    repository_write: AtomicBool,
     badges: crate::root_badges::BadgeChecks,
 }
 struct Data {
@@ -85,6 +86,7 @@ impl Runtime {
             cache: Mutex::new(ByteLru::new(CACHE_BUDGET_BYTES)),
             channel: Mutex::new(None),
             editor_active: AtomicBool::new(false),
+            repository_write: AtomicBool::new(false),
             badges: crate::root_badges::BadgeChecks::new(),
         }))
     }
@@ -111,7 +113,10 @@ impl Runtime {
         self.0.badges.cancel();
     }
     pub fn editor_active(&self) -> bool {
-        self.0.editor_active.load(Ordering::Acquire)
+        self.0.editor_active.load(Ordering::Acquire) || self.repository_write_active()
+    }
+    pub fn repository_write_active(&self) -> bool {
+        self.0.repository_write.load(Ordering::Acquire)
     }
     pub fn set_editor_active(&self, active: bool) {
         self.0.editor_active.store(active, Ordering::Release);
@@ -170,6 +175,9 @@ impl Runtime {
         }
         {
             let mut data = self.0.data.lock().unwrap();
+            if self.repository_write_active() {
+                return Err("Esperá a que termine la limpieza del repositorio.".into());
+            }
             data.control.cancel();
             data.watcher = None;
             data.control = Cancellation::new();
@@ -225,6 +233,9 @@ impl Runtime {
     pub fn close(&self) -> Result<(), String> {
         {
             let mut data = self.0.data.lock().unwrap();
+            if self.repository_write_active() {
+                return Err("Esperá a que termine la limpieza del repositorio.".into());
+            }
             data.control.cancel();
             data.watcher = None;
             data.generation += 1;
@@ -303,6 +314,9 @@ impl Runtime {
     fn spawn_scan(&self, rediscover: bool, affected: Option<HashSet<String>>) {
         let (root, generation, control) = {
             let mut data = self.0.data.lock().unwrap();
+            if self.repository_write_active() {
+                return;
+            }
             let Some(root) = data.root.clone() else {
                 return;
             };
@@ -794,6 +808,9 @@ impl Runtime {
             // cannot redirect a pending save. Filesystem version checks remain independent
             // of status revisions: watcher refreshes must not invalidate an unchanged draft.
             let data = runtime.0.data.lock().unwrap();
+            if runtime.repository_write_active() {
+                return Err("Esperá a que termine la limpieza del repositorio.".into());
+            }
             if data.generation != version.generation {
                 return Err("La raíz activa cambió; el borrador no se guardó.".into());
             }
@@ -812,6 +829,102 @@ impl Runtime {
         self.0.cache.lock().unwrap().clear();
         self.spawn_scan(false, Some(HashSet::from([repo_id])));
         Ok(())
+    }
+
+    pub async fn stash_preview(
+        &self,
+        repo_id: String,
+        generation: u64,
+    ) -> Result<StashPreview, String> {
+        let repo = self.repository_for_write(&repo_id, generation)?;
+        let control = self.0.data.lock().unwrap().control.clone();
+        let backend = self.0.backend.clone();
+        let permit = self
+            .0
+            .foreground
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?;
+        let preview = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            backend.stash_preview(&repo, &control)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        self.repository_for_write(&repo_id, generation)?;
+        Ok(preview)
+    }
+
+    fn repository_for_write(&self, repo_id: &str, generation: u64) -> Result<Repository, String> {
+        let data = self.0.data.lock().unwrap();
+        if data.generation != generation {
+            return Err("La raíz activa cambió. Volvé a seleccionar el repositorio.".into());
+        }
+        let state = data
+            .repositories
+            .get(repo_id)
+            .ok_or("El repositorio ya no está disponible.")?;
+        if state.error.is_some() {
+            return Err("Actualizá el repositorio y resolvé el error antes de limpiarlo.".into());
+        }
+        Ok(state.repository.clone())
+    }
+
+    pub async fn stash_repository(
+        &self,
+        repo_id: String,
+        generation: u64,
+        token: String,
+        include_untracked: bool,
+    ) -> Result<StashResult, String> {
+        let permit = self
+            .0
+            .foreground
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?;
+        let repo = self.repository_for_write(&repo_id, generation)?;
+        {
+            let data = self.0.data.lock().unwrap();
+            if data.generation != generation {
+                return Err("La raíz activa cambió.".into());
+            }
+            if data.scan_running {
+                return Err(
+                    "Esperá a que termine la consulta de cambios y volvé a intentar.".into(),
+                );
+            }
+            if self.editor_active() {
+                return Err("Terminá de editar antes de limpiar el repositorio.".into());
+            }
+            self.0.repository_write.store(true, Ordering::Release);
+        }
+        // Ownership travels into the blocking task: abandoning the IPC future must
+        // not release the close/root-switch guard while Git is still writing.
+        let guard = RepositoryWriteGuard(self.clone());
+        let runtime = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let result = runtime
+                .0
+                .backend
+                .stash_repository(&repo, &token, include_untracked);
+            runtime.0.cache.lock().unwrap().clear();
+            drop(guard);
+            runtime.spawn_scan(false, Some(HashSet::from([repo_id])));
+            result
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+}
+
+struct RepositoryWriteGuard(Runtime);
+impl Drop for RepositoryWriteGuard {
+    fn drop(&mut self) {
+        (self.0).0.repository_write.store(false, Ordering::Release);
     }
 }
 
@@ -846,6 +959,30 @@ fn ignored_event(path: &Path, root: &Path, registered: &[PathBuf]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn repository_write_guard_blocks_root_changes_and_survives_editor_flag_reset() {
+        let fixture = tempfile::tempdir().unwrap();
+        let runtime = Runtime::new(fixture.path().join("preferences.json"));
+        runtime.0.repository_write.store(true, Ordering::Release);
+        let guard = RepositoryWriteGuard(runtime.clone());
+        runtime.set_editor_active(false);
+        assert!(
+            runtime.editor_active(),
+            "Native close/quit must stay guarded"
+        );
+        assert!(runtime.close().is_err());
+        let channel = Channel::new(|_| Ok(()));
+        assert!(runtime
+            .open(fixture.path().to_string_lossy().into(), channel)
+            .await
+            .is_err());
+        runtime.spawn_scan(false, None);
+        assert!(!runtime.0.data.lock().unwrap().scan_running);
+        drop(guard);
+        assert!(!runtime.editor_active());
+        assert!(runtime.close().is_ok());
+    }
+
     #[test]
     fn watcher_keeps_git_state_and_skips_generated_churn() {
         let root = Path::new("/work");

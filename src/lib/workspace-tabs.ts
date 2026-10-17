@@ -1,4 +1,5 @@
 import type { RootBadgeState, WorkspaceSnapshot } from './types';
+import { isUntracked } from './tree';
 
 /** Tabs retain paths and scalar badges only; snapshots/diffs belong to the active root. */
 export function restoreRoots(openedRoots: readonly string[], lastRoot: string | null): string[] {
@@ -19,9 +20,9 @@ export function rootLabel(root: string): string {
   return root.split('/').filter(Boolean).pop() ?? '/';
 }
 
-/** Root state uses every raw repo entry, independent of mode, search or visibility. */
+/** Root indicators use tracked entries, independent of mode, search or visibility. */
 export function workspaceBadge(snapshot: WorkspaceSnapshot, error: string | null, prior?: RootBadgeState): RootBadgeState {
-  const changed = snapshot.repositories.some(repo => repo.entries.length > 0);
+  const changed = snapshot.repositories.some(repo => repo.entries.some(entry => !isUntracked(entry)));
   const failure = error ?? snapshot.repositories.find(repo => repo.error)?.error ?? null;
   if (changed) return { hasChanges: true, stale: snapshot.scanning || !!failure, error: failure };
   if (snapshot.scanning) return { hasChanges: prior?.hasChanges ?? null, stale: true, error: failure };
