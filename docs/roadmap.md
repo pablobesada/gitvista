@@ -1,13 +1,35 @@
-# Next increments
+# Roadmap
 
-## Diff scope selector and working-file editing — implemented
+GitVista is an early MVP focused on fast review across nested repositories. This document distinguishes shipped capabilities from candidate work; it is not a release schedule or a promise of dates.
 
-Add a compact **Cambios / Archivo completo** selector in the diff header so users can switch directly between relevant changed hunks and the complete selected file.
+## Available now
 
-- Default to **Cambios**, showing modified blocks with context.
-- **Archivo completo** reveals all unchanged regions while retaining original-left / updated-right alignment, syntax highlighting and change markers.
-- Load full contents only when requested, retaining the 10 MiB per-side limit and virtualized rendering.
-- Switching scope should preserve the selected file and the current change when possible.
-- Apply to Total, Unstaged and Staged comparisons. Keep it behind `DiffView` and retain one mounted diff.
+- Automatic nested-repo, worktree and submodule discovery, plus explicit additions under excluded directories.
+- One merged change tree, folder/peer-repository layouts, search and per-repo untracked visibility.
+- Root tabs with one active workspace and lightweight tracked-change indicators.
+- Split Total/Unstaged/Staged comparisons, relevant blocks or complete files, syntax highlighting, inline long-line emphasis and optional word wrap.
+- Explicit current-file editing, guarded saving, block/whole-file restoration into drafts and undo/redo.
+- Confirmed per-repository stash cleanup with optional untracked files and a recovery command.
+- Incremental refresh, bounded Git scheduling, virtualized rendering and reproducible fixture tests.
 
-Requested and implemented on 2026-10-12. The new side can also be edited explicitly in Total and Unstaged comparisons, with guarded saving and cancellation. Prepared/index and old versions remain read-only.
+See [usage](usage.md) for behavior and [validation](validation.md) for measured results and limits. Native validation currently covers macOS Apple Silicon.
+
+## Near-term priorities
+
+1. Keep correctness and responsiveness stable as workspaces grow: preserve drafts, stale-state indicators, native path identities and clear write boundaries.
+2. Complete native startup, frame/scroll and end-to-end diff measurements. The existing latency/frame goals remain goals until measured.
+3. Improve onboarding and diagnose reported setup problems using reproducible, sanitized examples.
+
+## Candidate increments
+
+These need implementation and validation before they can be offered:
+
+- Downloadable macOS releases, signing/notarization and a documented release process.
+- CI checks for contributors; no automated GitHub workflow is currently configured.
+- Linux, Intel Mac and Windows compatibility work, including native watcher, renderer, clipboard and build verification.
+- A compact recovery UI for GitVista-created stashes. Recovery currently uses the displayed Git command; there is no stash-history UI.
+- Accessibility, keyboard and language improvements based on concrete user reports. Current UI labels are in Spanish.
+
+## Scope to discuss before implementation
+
+Staging, commits, history, conflict resolution, multiple simultaneously active workspace snapshots and a plugin framework would expand the product substantially. They are not current features or committed milestones. Propose a focused use case through [GitHub Issues](https://github.com/pablobesada/gitvista/issues/new/choose) before starting this work.
