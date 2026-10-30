@@ -33,12 +33,15 @@ fn repository_display_preferences_migrate_and_round_trip() {
     assert_eq!(preferences.tree_view, gitvista_core::TreeView::Folders);
     assert!(preferences.untracked_by_repo.is_empty());
     assert!(preferences.opened_roots.is_empty());
+    assert!(!preferences.ignore_whitespace);
+    preferences.ignore_whitespace = true;
     preferences.opened_roots = vec!["/example".into(), "/other".into()];
     preferences.tree_view = gitvista_core::TreeView::Repositories;
     preferences.untracked_by_repo.insert("repo-a".into(), false);
     runtime.save_preferences(preferences).unwrap();
     let restored = Runtime::new(path).preferences();
     assert_eq!(restored.tree_view, gitvista_core::TreeView::Repositories);
+    assert!(restored.ignore_whitespace);
     assert_eq!(restored.untracked_by_repo.get("repo-a"), Some(&false));
     assert_eq!(restored.last_root.as_deref(), Some("/example"));
     assert_eq!(restored.opened_roots, vec!["/example", "/other"]);

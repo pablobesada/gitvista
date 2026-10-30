@@ -16,10 +16,12 @@
   import type { TextEdit } from '@pierre/diffs/edit';
   import { changeOverview, overviewThumb } from '../lib/change-overview';
 
-  let { response, loading = false, error = null, onLoadContents, onRefresh, onEditingChange }: {
+  let { response, loading = false, error = null, ignoreWhitespace = false, onIgnoreWhitespaceChange, onLoadContents, onRefresh, onEditingChange }: {
     response: DiffResponse | null;
     loading?: boolean;
     error?: string | null;
+    ignoreWhitespace?: boolean;
+    onIgnoreWhitespaceChange?: (ignore: boolean) => void;
     onLoadContents: () => Promise<DiffContents>;
     onRefresh: () => Promise<void>;
     onEditingChange: (editing: boolean) => void;
@@ -40,6 +42,7 @@
   let scope = $state<'changes' | 'full'>('changes');
   let wordWrap = $state(false);
   let fullReady = $state(false);
+  let whitespaceFiltered = $state(false);
   let editing = $state(false);
   let dirty = $state(false);
   let saving = $state(false);
@@ -334,7 +337,7 @@
   function install(next: DiffResponse | null, loader: () => Promise<DiffContents>): void {
     // Watcher refreshes must never replace an active draft.
     if (editing || editStarting) return;
-    const key = next == null ? '' : `${next.generation}:${next.requestId}:${next.result.entryId}:${next.result.mode}`;
+    const key = next == null ? '' : `${next.generation}:${next.requestId}:${next.result.entryId}:${next.result.mode}:${ignoreWhitespace}`;
     if (key === activeKey) return;
     const sameFile = next != null && activeResponse != null &&
       next.result.entryId === activeResponse.result.entryId && next.result.mode === activeResponse.result.mode;
@@ -349,6 +352,7 @@
     selectionHint = 'Seleccioná números de línea para copiar un rango · ⌘C';
     activeModel = null;
     fullReady = false;
+    whitespaceFiltered = false;
     hunkCount = 0;
     visibleActions = [];
     hasOldVersion = null;
@@ -366,6 +370,14 @@
       hunkCount = changeTargets(activeModel).length;
       activeHunk = Math.min(activeHunk, hunkCount - 1);
       activeItemId = `${next.result.entryId}:${next.result.mode}`;
+      if (ignoreWhitespace) {
+        // Validate against the original Git patch before deriving a filtered
+        // comparison. Only the selected file's bounded contents are loaded.
+        viewer?.setItems([]);
+        const expected = revision;
+        void showFull().catch(cause => { if (expected === revision) renderError = String(cause); });
+        return;
+      }
       const instance = renderer();
       instance.clearSelectedLines();
       instance.setItems([{ id: activeItemId, type: 'diff', fileDiff: activeModel, version: ++itemVersion }]);
@@ -379,6 +391,7 @@
   $effect(() => {
     const next = response;
     const loader = onLoadContents;
+    ignoreWhitespace;
     if (mounted) untrack(() => install(next, loader));
   });
 
@@ -391,7 +404,9 @@
     const expected = revision;
     const loaded = await loadContents(activeModel);
     if (expected !== revision) return;
-    if (activeModel && activeModel.type !== 'rename-pure' && loaded.oldFile && loaded.newFile) {
+    if (fullReady && activeModel) { applyViewOptions(); return; }
+    const filter = ignoreWhitespace && !editing && !editStarting;
+    if (!filter && activeModel && activeModel.type !== 'rename-pure' && loaded.oldFile && loaded.newFile) {
       // CodeView owns hydration and its highlight/layout caches. Mutating its
       // mounted metadata here would leave the previous partial AST out of sync.
       fullReady = true;
@@ -399,7 +414,8 @@
       applyViewOptions();
       return;
     }
-    activeModel = completeDiff(activeModel, loaded);
+    activeModel = completeDiff(filter ? null : activeModel, loaded, filter);
+    whitespaceFiltered = filter;
     activeItemId = `${activeResponse.result.entryId}:${activeResponse.result.mode}`;
     hunkCount = changeTargets(activeModel).length;
     fullReady = true;
@@ -425,7 +441,11 @@
   }
   $effect(() => {
     response; scope; mounted;
-    if (mounted && scope === 'full') untrack(() => { if (!editing && !editStarting) void showFull().catch(cause => renderError = String(cause)); });
+    if (mounted && scope === 'full') untrack(() => {
+      if (editing || editStarting) return;
+      const expected = revision;
+      void showFull().catch(cause => { if (expected === revision) renderError = String(cause); });
+    });
   });
 
   async function beginEdit() {
@@ -443,6 +463,15 @@
       await setEditorActive(true);
       if (expected !== revision) { await setEditorActive(false); return; }
       scope = 'full';
+      if (whitespaceFiltered) {
+        // Editing and restoration always use the exact bytes and all changes.
+        // Keep the preference, and reapply it only after leaving the editor.
+        activeModel = completeDiff(null, loaded);
+        whitespaceFiltered = false;
+        hunkCount = changeTargets(activeModel).length;
+        activeHunk = Math.min(activeHunk, hunkCount - 1);
+        viewer?.clearSelectedLines();
+      }
       await showFull();
       baselineText = loaded.newFile.contents;
       draftText = baselineText;
@@ -469,7 +498,11 @@
     }
     finally {
       editStarting = false;
-      if (!editing) { onEditingChange(false); install(response, onLoadContents); }
+      if (!editing) {
+        onEditingChange(false);
+        if (ignoreWhitespace) activeKey = '';
+        install(response, onLoadContents);
+      }
     }
   }
   async function endEdit() {
@@ -482,6 +515,7 @@
     onEditingChange(false);
     if (activeModel) viewer?.setItems([{ id: activeItemId, type: 'diff', fileDiff: activeModel, edit: false, version: ++itemVersion }]);
     await setEditorActive(false);
+    if (ignoreWhitespace) activeKey = '';
     install(response, onLoadContents);
     if (scope === 'full') await showFull().catch(cause => renderError = String(cause));
   }
@@ -674,11 +708,12 @@
 
   const leftLabel = $derived(response?.result.mode === 'unstaged' ? 'Índice' : 'HEAD');
   const rightLabel = $derived(response?.result.mode === 'staged' ? 'Índice' : 'Actual');
-  const textAvailable = $derived(response != null && (response.result.kind === 'text' || (scope === 'full' && fullReady && ['empty', 'metadata'].includes(response.result.kind))));
+  const filteredEmpty = $derived(whitespaceFiltered && hunkCount === 0 && scope === 'changes');
+  const textAvailable = $derived(!filteredEmpty && response != null && (response.result.kind === 'text' || (scope === 'full' && fullReady && ['empty', 'metadata'].includes(response.result.kind))));
   const canShowFull = $derived(response != null && ['text', 'empty', 'metadata'].includes(response.result.kind));
   const overviewShown = $derived(scope === 'full' && fullReady && textAvailable && !error && !renderError && !loading && !contentsLoading);
   $effect(() => { overviewShown; overviewCanvas; if (mounted) untrack(scheduleActions); });
-  const stateTitle = $derived(error ? 'No se pudo cargar el diff' : response == null ? 'Elegí un archivo para revisar' :
+  const stateTitle = $derived(error ? 'No se pudo cargar el diff' : filteredEmpty ? 'Sin diferencias al ignorar espacios' : response == null ? 'Elegí un archivo para revisar' :
     response.result.kind === 'binary' ? 'Archivo binario' : response.result.kind === 'conflict' ? 'Conflicto de merge' :
     response.result.kind === 'tooLarge' ? 'Archivo demasiado grande' : response.result.kind === 'metadata' ? 'Cambios de metadatos' :
     response.result.kind === 'empty' ? 'Sin cambios en esta comparación' : 'No se pudo mostrar el diff');
@@ -694,6 +729,7 @@
         <button class:active={scope === 'full'} aria-pressed={scope === 'full'} disabled={!canShowFull || loading || editing || editStarting} onclick={() => setScope('full')}>Archivo completo</button>
       </div>
       <button class="wrap-toggle" class:active={wordWrap} aria-pressed={wordWrap} aria-label="Ajustar líneas" title={wordWrap ? 'Desactivar ajuste de línea · Word wrap' : 'Activar ajuste de línea · Word wrap'} disabled={!canShowFull || loading || editStarting || saving} onclick={toggleWordWrap}><Icon name="wrap" size={14} />Ajustar líneas</button>
+      <button class="wrap-toggle" class:active={ignoreWhitespace} aria-pressed={ignoreWhitespace} aria-label="Ignorar espacios" title={editing ? 'Durante la edición se muestran todas las diferencias. La preferencia se vuelve a aplicar al salir.' : 'Ignorar espacios y tabulaciones dentro de cada línea, incluida la indentación. No modifica archivos.'} disabled={!canShowFull || loading || contentsLoading || editing || editStarting || saving || actionBusy} onclick={() => onIgnoreWhitespaceChange?.(!ignoreWhitespace)}><Icon name="whitespace" size={14} />Ignorar espacios</button>
     </div>
     <div class="edit-actions">
       <button disabled={!canShowFull || hasOldVersion === false || hasNewVersion === false || response?.result.mode === 'staged' || loading || contentsLoading || editStarting || saving || actionBusy} title={hasOldVersion === false ? 'No hay una versión vieja de este archivo' : hasNewVersion === false ? 'El archivo actual no existe' : response?.result.mode === 'staged' ? 'Usá Total o Sin preparar para restaurar el archivo actual' : `Restaurar todo el contenido desde ${leftLabel} en el borrador · Guardar con ⌘S`} onclick={restoreFile}><Icon name="restore" size={13} />Restaurar archivo</button>
@@ -701,6 +737,7 @@
         <button class="history-button" aria-label="Deshacer" title="Deshacer · ⌘Z" disabled={!canUndo || saving || actionBusy} onclick={() => historyAction(false)}><Icon name="undo" size={14} /></button>
         <button class="history-button" aria-label="Rehacer" title="Rehacer · ⇧⌘Z" disabled={!canRedo || saving || actionBusy} onclick={() => historyAction(true)}><Icon name="redo" size={14} /></button>
         <span class="draft-status">{dirty ? 'Sin guardar' : 'Editando'}</span>
+        {#if ignoreWhitespace}<span class="whitespace-hint">Incluye cambios de espacios</span>{/if}
         <button disabled={saving} onclick={async () => { if (await canLeave()) { renderError = null; await onRefresh(); } }}>Cancelar</button>
         <button class="save-button" disabled={saving || !dirty} onclick={save}>{saving ? 'Guardando…' : 'Guardar'}<kbd>⌘S</kbd></button>
       {:else}
@@ -730,7 +767,7 @@
       <div class="empty-state">
         <div class="state-icon" aria-hidden="true">{error ? '!' : response == null ? '⇄' : response.result.kind === 'binary' ? '◈' : response.result.kind === 'conflict' ? '⑂' : '⇄'}</div>
         <h2>{loading && response == null ? 'Cargando cambios…' : stateTitle}</h2>
-        <p>{error ?? response?.result.message ?? (response == null ? 'Abrí un proyecto y recorré sus cambios desde el árbol de la izquierda.' : 'Git no devolvió cambios de texto para esta comparación.')}</p>
+        <p>{error ?? (filteredEmpty ? 'El archivo sigue modificado en Git. Desactivá “Ignorar espacios” para ver esos cambios o elegí “Archivo completo” para revisar ambas versiones.' : response?.result.message ?? (response == null ? 'Abrí un proyecto y recorré sus cambios desde el árbol de la izquierda.' : 'Git no devolvió cambios de texto para esta comparación.'))}</p>
         {#if response?.result.kind === 'metadata' && response.result.patch}
           <pre class="metadata">{response.result.patch}</pre>
         {/if}
@@ -759,6 +796,7 @@
   .view-actions { display: flex; align-items: center; gap: 8px; }
   .scope-switch button, .edit-actions button, .wrap-toggle { padding: 5px 8px; border-radius: 4px; color: #8995aa; display: flex; align-items: center; gap: 6px; font-size: 10px; }
   .scope-switch button.active, .wrap-toggle.active { color: #d1d9ef; background: #2a2e38; }
+  .whitespace-hint { color: #8995aa; font-size: 10px; }
   .wrap-toggle:hover:not(:disabled) { background: #ffffff08; }
   .edit-actions { display: flex; align-items: center; gap: 6px; }
   .edit-actions button:hover:not(:disabled) { background: #ffffff08; }

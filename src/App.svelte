@@ -75,6 +75,10 @@
       void savePreferences($state.snapshot(preferences)).catch(error => showToast(`No se pudieron guardar las preferencias: ${String(error)}`));
     }, 450);
   }
+  function setIgnoreWhitespace(ignore: boolean) {
+    preferences.ignoreWhitespace = ignore;
+    persist();
+  }
   function expansionKey(root: string, view = preferences.treeView) {
     return view === 'folders' ? root : `${root}\0repositories`;
   }
@@ -506,7 +510,7 @@
           </div>
           <div class="diff-controls"><div class="comparison-switch" aria-label="Comparación">{#each modes as option}<button class:active={mode === option.value} aria-pressed={mode === option.value} title={option.title} onclick={() => setMode(option.value)}>{option.label}</button>{/each}</div><div class="diff-navigation"><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Cambio anterior" title="Cambio anterior · ⇧F7" onclick={() => diffView?.nextHunk(-1)}><Icon name="chevron-up" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Cambio siguiente" title="Cambio siguiente · F7" onclick={() => diffView?.nextHunk(1)}><Icon name="chevron-down" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Copiar líneas seleccionadas" title="Copiar líneas seleccionadas" onclick={copySelection}><Icon name="copy" size={15} /></button></div></div>
         </div>
-        <DiffView bind:this={diffView} {response} loading={loadingDiff} error={diffError} onLoadContents={loadContents} onRefresh={() => requestDiff()} onEditingChange={editingChanged} />
+        <DiffView bind:this={diffView} {response} loading={loadingDiff} error={diffError} ignoreWhitespace={preferences.ignoreWhitespace} onIgnoreWhitespaceChange={setIgnoreWhitespace} onLoadContents={loadContents} onRefresh={() => requestDiff()} onEditingChange={editingChanged} />
       </main>
     </div>
     <footer class="statusbar"><div class="status-left"><span class="status-indicator" class:busy={snapshot.scanning} class:stale={staleCount > 0 || !!workspaceError}></span>{#if workspaceError}<span class="status-error" title={workspaceError}>{workspaceError}</span>{:else if snapshot.scanning}<span>Consultando {snapshot.scannedCount}{totalCount ? ` de ${totalCount}` : ''} repositorios</span>{:else if staleCount}<span title={states.filter(state => state.error).map(state => `${state.repository.relativePath}: ${state.error}`).join('\n')}>{staleCount} repositorios sin actualizar</span>{:else}<span>{states.length} repositorios<span class="status-separator">·</span>{modeCount} archivos con cambios{#if hiddenCount}<span class="status-separator">·</span>{hiddenCount} sin seguimiento ocultos{/if}</span>{/if}{#if elapsedMs !== null && !snapshot.scanning}<span class="scan-time">{elapsedMs < 1000 ? `${Math.round(elapsedMs)} ms` : `${(elapsedMs / 1000).toFixed(1)} s`}</span>{/if}</div><div class="status-right">{#if currentRepo?.branch}<span><Icon name="branch" size={12} />{currentRepo.branch}</span><span class="status-separator">·</span>{/if}<span><Icon name="split" size={12} />Vista dividida</span><span class="status-separator">·</span><span>{editorActive ? "Editando archivo actual" : "Revisión"}</span></div></footer>

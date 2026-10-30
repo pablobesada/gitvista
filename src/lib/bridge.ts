@@ -7,7 +7,7 @@ import { demoContents, demoDiff, demoWorkspace, saveDemoContents } from './demo'
 import { workspaceBadge } from './workspace-tabs';
 
 export const isDesktop = isTauri();
-export const defaultPreferences: Preferences = { recentRoots: [], openedRoots: [], extraRepositories: {}, sidebarWidth: 280, expandedPaths: {}, lastRoot: null, treeView: 'folders', untrackedByRepo: {} };
+export const defaultPreferences: Preferences = { recentRoots: [], openedRoots: [], extraRepositories: {}, sidebarWidth: 280, expandedPaths: {}, lastRoot: null, treeView: 'folders', untrackedByRepo: {}, ignoreWhitespace: false };
 let demoGeneration = 0;
 let demoRoot: string | null = null;
 let demoListener: ((event: WorkspaceEvent) => void) | null = null;

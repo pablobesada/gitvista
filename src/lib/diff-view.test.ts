@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { hydratePartialDiff, parsePatchFiles } from '@pierre/diffs';
 import { changeTargets, completeDiff, contentsLinesText, nativeSelectionText, selectedLinesText, selectionFromContents, validateLoadedContents } from './diff-view';
+import { changeBlocks, newBlockText, restoreBlockEdit } from './diff-actions';
 
 const patch = `diff --git a/sample.es6 b/sample.es6
 index aaaaaaa..bbbbbbb 100644
@@ -18,6 +19,72 @@ index aaaaaaa..bbbbbbb 100644
  tail
 `;
 const model = () => parsePatchFiles(patch, 'fixture', true)[0].files[0];
+
+describe('optional whitespace comparison', () => {
+  const versions = (old: string, next: string) => ({
+    oldFile: { name: 'sample.es6', contents: old, cacheKey: 'old' },
+    newFile: { name: 'sample.es6', contents: next, cacheKey: 'new' },
+  });
+  it('ignores indentation, tabs, internal/trailing spaces and CRLF, preserving each side for copy', () => {
+    const contents = versions('  call ( x );  \r\n\tend();\r\n', 'call(x);\n    end();\n');
+    const diff = completeDiff(null, contents, true);
+    expect(changeTargets(diff)).toEqual([]);
+    expect(diff.splitLineCount).toBe(2);
+    expect(selectedLinesText(diff, { start: 1, end: 2, side: 'deletions' })).toBe(contents.oldFile.contents);
+    expect(selectedLinesText(diff, { start: 1, end: 2, side: 'additions' })).toBe(contents.newFile.contents);
+    expect(completeDiff(null, contents).cacheKey).not.toBe(diff.cacheKey);
+    expect(changeTargets(completeDiff(null, contents)).length).toBeGreaterThan(0);
+  });
+  it('retains real edits and distinct raw context when both types share a hunk', () => {
+    const contents = versions('  before\n  value = 1;\n  after\n', 'before\nvalue = 2;\nafter\n');
+    const diff = completeDiff(null, contents, true);
+    const blocks = changeBlocks(diff);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ oldStart: 1, oldCount: 1, newStart: 1, newCount: 1 });
+    expect(diff.deletionLines.join('')).toBe(contents.oldFile.contents);
+    expect(diff.additionLines.join('')).toBe(contents.newFile.contents);
+    expect(selectedLinesText(diff, { start: 1, end: 1, side: 'deletions' })).toBe('  before\n');
+  });
+  it('keeps blank-line insertions, line boundaries, final newlines and Unicode spaces significant', () => {
+    for (const [old, next] of [['a\nb\n', 'a\n\nb\n'], ['a b\n', 'a\nb\n'], ['a\n', 'a'], ['a\u00a0b\n', 'ab\n']]) {
+      expect(changeTargets(completeDiff(null, versions(old, next), true)).length).toBeGreaterThan(0);
+    }
+  });
+  it('does not hide added/deleted files made only of whitespace', () => {
+    const file = { name: 'spaces.es6', contents: ' \t\n', cacheKey: 'spaces' };
+    const added = completeDiff(null, { oldFile: null, newFile: file }, true);
+    const deleted = completeDiff(null, { oldFile: file, newFile: null }, true);
+    expect(added.type).toBe('new');
+    expect(deleted.type).toBe('deleted');
+    expect(changeTargets(added)).toHaveLength(1);
+    expect(changeTargets(deleted)).toHaveLength(1);
+  });
+  it('restores the selected filtered block without touching hidden whitespace elsewhere', () => {
+    const contents = versions('  before\n  old();\n  after\n', 'before\nnew();\nafter\n');
+    const block = changeBlocks(completeDiff(null, contents, true))[0];
+    const edit = restoreBlockEdit(block, contents.oldFile.contents, contents.newFile.contents, newBlockText(block, contents.newFile.contents));
+    expect(edit).toBeDefined();
+    // TextEdit line boundaries and replacement stay anchored to original bytes.
+    expect(edit.newText).toBe('  old();\n');
+    expect(edit.range.start.line).toBe(1);
+    expect(edit.range.end.line).toBe(2);
+  });
+  it('recomputes filtered alignment rather than reusing a whitespace-heavy Git patch', () => {
+    const exact = completeDiff(null, versions(' old\n', 'old\n'));
+    expect(changeTargets(exact)).toHaveLength(1);
+    const diff = completeDiff(exact, versions(' old\n', 'old\n'), true);
+    expect(changeTargets(diff)).toEqual([]);
+    expect(changeTargets(exact)).toHaveLength(1);
+  });
+  it('handles long lines without normalizing the displayed or copied contents', () => {
+    const old = ' '.repeat(80_000) + 'const value = 1;\n';
+    const next = '\tconst value=1;\t\n';
+    const diff = completeDiff(null, versions(old, next), true);
+    expect(changeTargets(diff)).toEqual([]);
+    expect(diff.deletionLines.join('')).toBe(old);
+    expect(diff.additionLines.join('')).toBe(next);
+  });
+});
 
 describe('complete file versions', () => {
   it('shows both full versions even for a net-empty comparison', () => {

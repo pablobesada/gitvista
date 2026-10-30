@@ -247,6 +247,8 @@ pub struct Preferences {
     pub tree_view: TreeView,
     #[serde(default)]
     pub untracked_by_repo: HashMap<String, bool>,
+    #[serde(default)]
+    pub ignore_whitespace: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -268,6 +270,7 @@ impl Default for Preferences {
             last_root: None,
             tree_view: TreeView::Folders,
             untracked_by_repo: HashMap::new(),
+            ignore_whitespace: false,
         }
     }
 }

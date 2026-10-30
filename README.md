@@ -13,7 +13,7 @@ Built with Rust, Tauri 2, Svelte 5 and TypeScript. Licensed under [MIT](LICENSE)
 - Discovers nested repositories, worktrees and submodules under one workspace root.
 - Groups changes by project folders or independent repositories, with search and per-repo untracked-file visibility.
 - Compares **HEAD → working tree**, **index → working tree**, or **HEAD → index**.
-- Shows changed blocks or complete files, with syntax highlighting, inline emphasis, optional word wrap and keyboard navigation.
+- Shows changed blocks or complete files, with syntax highlighting, inline emphasis, optional word wrap/whitespace comparison and keyboard navigation.
 - Lets you explicitly edit the current working file, restore blocks into a draft, and undo before saving.
 - Cleans a selected repository through a confirmed, recoverable stash action.
 - Keeps multiple root folders in tabs, with one active workspace and one mounted diff.

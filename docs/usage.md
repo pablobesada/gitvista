@@ -52,9 +52,12 @@ A new repository without HEAD uses an empty original for review. A Total diff ca
 - **Cambios** shows modified blocks with context. Click a hunk separator to reveal more context.
 - **Archivo completo** loads both complete versions for the selected file, within the content limits below.
 - **Ajustar líneas** toggles word wrap in both columns. It starts off, retains its setting while switching files during the session, and does not change file contents.
+- **Ignorar espacios** ignores ASCII whitespace within lines, including indentation, spaces/tabs and CRLF versus LF. It starts off and its preference is saved. Blank-line additions, line boundaries, final-newline changes and Unicode spacing remain significant. This is a textual filter, so spaces inside string literals are ignored too; it does not decide whether code behaves the same.
 - Stronger red/green emphasis marks changed fragments inside a line. For dense or widely separated edits in very long lines, emphasis may cover the differing middle rather than each individual edit; identical ends remain unmarked.
 
 Full-file view has a change overview on the right. Red marks indicate deletions, green marks additions, and the shaded frame shows the viewport. Click a mark to jump to its block. Focus the overview and use arrow keys to move between changes, PageUp/PageDown to scroll, or Home/End to reach the ends.
+
+Ignoring whitespace only changes the selected comparison, its block navigation and overview. Original text, per-side copying, Git status, tree counts and root indicators stay intact. If only whitespace differs, **Cambios** explains that no differences remain under the filter; **Archivo completo** still displays both original versions. The selected file's complete contents are loaded on demand within the existing 10 MiB per-side cap, with a bounded comparison. During editing/restoration the filter is temporarily suspended and all differences are shown; the saved preference resumes after leaving the editor.
 
 Use **F7 / Shift+F7** for next/previous change while reviewing. Select text in either column, or drag through its line numbers to select a range; **⌘C** copies that side without gutter numbers. Line-number ranges can span virtualized rows. During editing, ordinary copy and navigation belong to the editor.
 

@@ -65,10 +65,10 @@ export function parseSelectedDiff(response: DiffResponse): FileDiffMetadata | nu
   return files[0];
 }
 
-/** Keep Git's alignment when hydrating; calculate only metadata-only comparisons. */
-export function completeDiff(model: FileDiffMetadata | null, contents: DiffContents): FileDiffMetadata {
+/** Keep Git's alignment when hydrating; derive a fresh model for metadata or whitespace filtering. */
+export function completeDiff(model: FileDiffMetadata | null, contents: DiffContents, ignoreWhitespace = false): FileDiffMetadata {
   if (!contents.oldFile && !contents.newFile) throw new Error('Ninguna versión del archivo está disponible.');
-  if (model?.isPartial && model.type !== 'rename-pure' && contents.oldFile && contents.newFile) {
+  if (!ignoreWhitespace && model?.isPartial && model.type !== 'rename-pure' && contents.oldFile && contents.newFile) {
     validateLoadedContents(model, contents);
     return hydratePartialDiff('merge', model, { oldFile: contents.oldFile, newFile: contents.newFile });
   }
@@ -76,8 +76,15 @@ export function completeDiff(model: FileDiffMetadata | null, contents: DiffConte
   const oldFile = contents.oldFile && contents.newFile ? { ...contents.oldFile, name: contents.newFile.name } : contents.oldFile;
   // diff supports a runtime deadline; Pierre's nonabortable declaration omits it.
   // A deadline failure throws and is surfaced rather than blocking on a huge diff.
-  const options = { context: 3, timeout: 200 };
+  // The pinned jsdiff forwards comparator to its line matcher (its patch-option
+  // declaration omits it). Keep original files: Pierre builds each side's line
+  // array from those bytes, including whitespace in unchanged context and copy.
+  // Preserve line boundaries, Unicode spacing and final-newline differences.
+  const options = { context: 3, timeout: 200, ...(ignoreWhitespace ? {
+    comparator: (old: string, next: string) => old === next || old.replace(/[ \t\r\v\f]/g, '') === next.replace(/[ \t\r\v\f]/g, ''),
+  } : {}) };
   const complete = parseDiffFromFile(oldFile, contents.newFile, options, true);
+  if (ignoreWhitespace && complete.cacheKey) complete.cacheKey += ':ignore-whitespace';
   if (complete.hunks.length === 0) {
     // Pierre virtualizes by hunk metrics; a comparison with identical contents
     // otherwise has zero height. Seed an unchanged region, including a blank

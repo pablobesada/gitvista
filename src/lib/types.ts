@@ -12,7 +12,7 @@ export interface FileContents { name: string; contents: string; cacheKey: string
 export interface EditVersion { generation: number; token: string; }
 export interface DiffContents { oldFile: FileContents | null; newFile: FileContents | null; editVersion?: EditVersion | null; editUnavailableReason?: string | null; }
 export type TreeView = 'folders' | 'repositories';
-export interface Preferences { recentRoots: string[]; openedRoots: string[]; extraRepositories: Record<string, string[]>; sidebarWidth: number; expandedPaths: Record<string, string[]>; lastRoot: string | null; treeView: TreeView; untrackedByRepo: Record<string, boolean>; }
+export interface Preferences { recentRoots: string[]; openedRoots: string[]; extraRepositories: Record<string, string[]>; sidebarWidth: number; expandedPaths: Record<string, string[]>; lastRoot: string | null; treeView: TreeView; untrackedByRepo: Record<string, boolean>; ignoreWhitespace: boolean; }
 
 export interface StashPreview { token: string; tracked: number; staged: number; unstaged: number; untracked: number; }
 export interface StashResult { stashOid: string | null; remaining: number | null; warning: string | null; }

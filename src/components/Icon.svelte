@@ -26,6 +26,7 @@
   {:else if name === 'warning'}<path d="m12 3 10 18H2ZM12 9v4m0 4h.01" />
   {:else if name === 'split'}<rect x="3" y="4" width="18" height="16" rx="3" /><path d="M12 4v16m-5-8h2m6 0h2" />
   {:else if name === 'wrap'}<path d="M3 5h18M3 10h13a4 4 0 0 1 0 8h-4m3-3-3 3 3 3M3 16h4" />
+  {:else if name === 'whitespace'}<path d="M4 9v7h16V9M8 5h8" />
   {:else if name === 'clock'}<circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
   {:else if name === 'collapse'}<path d="M7 3h14v14M3 7h14v14H3Zm4 7h6" />
   {:else if name === 'external'}<path d="M14 3h7v7m0-7L10 14m0-11H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5" />
