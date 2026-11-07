@@ -38,10 +38,12 @@ export interface TreeOptions { view?: TreeView; untrackedByRepo?: Readonly<Recor
 
 export function entryInMode(entry: ChangeEntry, mode: DiffMode): boolean {
   if (entry.indexStatus === 'U' || entry.worktreeStatus === 'U') return true;
-  return mode === 'total' || (mode === 'staged' ? hasStatus(entry.indexStatus) && entry.indexStatus !== '?' : hasStatus(entry.worktreeStatus));
+  if (mode === 'total') return entry.comparisonStatus == null || entry.comparisonStatus !== '';
+  return mode === 'staged' ? hasStatus(entry.indexStatus) && entry.indexStatus !== '?' : hasStatus(entry.worktreeStatus);
 }
 
 export function statusLabel(entry: ChangeEntry, mode: DiffMode): string {
+  if (mode === 'total' && entry.comparisonStatus) return entry.comparisonStatus;
   const statuses = mode === 'staged' ? entry.indexStatus : mode === 'unstaged' ? entry.worktreeStatus : entry.indexStatus + entry.worktreeStatus;
   if (statuses.includes('U')) return 'U';
   if (statuses.includes('?')) return '?';

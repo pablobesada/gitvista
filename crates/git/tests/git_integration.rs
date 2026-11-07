@@ -1290,3 +1290,167 @@ fn stash_uses_native_repository_paths_and_honors_cancelled_previews() {
     );
     assert_eq!(fs::read_to_string(root.join(&name)).unwrap(), "changed\n");
 }
+
+#[test]
+fn branch_comparison_includes_committed_changes_and_preserves_pending_states() {
+    let fixture = Fixture::new();
+    fixture.write("edited.txt", "base\n");
+    fixture.write("removed.txt", "old\n");
+    fixture.write("net-empty.txt", "base\n");
+    fixture.commit();
+    git(fixture.root(), &["branch", "review-base"]);
+    fixture.write("edited.txt", "committed\n");
+    fs::remove_file(fixture.root().join("removed.txt")).unwrap();
+    fixture.write("added.txt", "new committed\n");
+    fixture.commit();
+    fixture.write("edited.txt", "actual\n");
+    fixture.write("net-empty.txt", "staged\n");
+    git(fixture.root(), &["add", "net-empty.txt"]);
+    fixture.write("net-empty.txt", "base\n");
+    fixture.write("untracked.txt", "untracked\n");
+    let mut repo = fixture.repository();
+    repo.comparison = Some(
+        fixture
+            .git
+            .resolve_comparison(&repo, "refs/heads/review-base", &fixture.control)
+            .unwrap(),
+    );
+    let entries = fixture
+        .git
+        .comparison_status(&repo, fixture.root(), &fixture.control)
+        .unwrap();
+    let entry = |name: &str| entries.iter().find(|entry| entry.path == name).unwrap();
+    assert_eq!(entry("removed.txt").comparison_status.as_deref(), Some("D"));
+    assert_eq!(entry("added.txt").comparison_status.as_deref(), Some("A"));
+    // Raw status keeps candidates without computing patches for the whole tree.
+    assert_eq!(
+        fixture
+            .git
+            .diff(
+                &repo,
+                entry("net-empty.txt"),
+                DiffMode::Total,
+                &fixture.control
+            )
+            .unwrap()
+            .kind,
+        DiffKind::Empty
+    );
+    assert_eq!(entry("net-empty.txt").index_status, "M");
+    assert_eq!(entry("net-empty.txt").worktree_status, "M");
+    assert_eq!(
+        entry("untracked.txt").comparison_status.as_deref(),
+        Some("?")
+    );
+    let contents = fixture
+        .git
+        .contents(
+            &repo,
+            entry("edited.txt"),
+            DiffMode::Total,
+            &fixture.control,
+        )
+        .unwrap();
+    assert_eq!(contents.old_file.unwrap().contents, "base\n");
+    assert_eq!(contents.new_file.unwrap().contents, "actual\n");
+    for name in ["edited.txt", "removed.txt", "added.txt", "untracked.txt"] {
+        assert_eq!(
+            fixture
+                .git
+                .diff(&repo, entry(name), DiffMode::Total, &fixture.control)
+                .unwrap()
+                .kind,
+            DiffKind::Text,
+            "{name}"
+        );
+    }
+    assert_eq!(
+        git(fixture.root(), &["branch", "--show-current"]).trim(),
+        "main"
+    );
+    assert!(fixture
+        .git
+        .resolve_comparison(&repo, "--output=evil", &fixture.control)
+        .is_err());
+    assert!(fixture
+        .git
+        .resolve_comparison(&repo, "HEAD", &fixture.control)
+        .is_err());
+    git(
+        fixture.root(),
+        &[
+            "update-ref",
+            "refs/remotes/origin/review-base",
+            "refs/heads/review-base",
+        ],
+    );
+    assert!(fixture
+        .git
+        .branches(&repo, &fixture.control)
+        .unwrap()
+        .contains(&"refs/remotes/origin/review-base".into()));
+}
+
+#[test]
+fn branch_comparison_pins_base_and_handles_index_removal_and_renames() {
+    let fixture = Fixture::new();
+    fixture.write("old.txt", "base\n");
+    fixture.write("removed-index.txt", "original\n");
+    fixture.commit();
+    git(fixture.root(), &["branch", "base"]);
+    git(fixture.root(), &["mv", "old.txt", "new.txt"]);
+    git(fixture.root(), &["rm", "--cached", "removed-index.txt"]);
+    fixture.write("removed-index.txt", "actual replacement\n");
+    let mut repo = fixture.repository();
+    repo.comparison = Some(
+        fixture
+            .git
+            .resolve_comparison(&repo, "refs/heads/base", &fixture.control)
+            .unwrap(),
+    );
+    let entries = fixture
+        .git
+        .comparison_status(&repo, fixture.root(), &fixture.control)
+        .unwrap();
+    for (name, old, new) in [
+        ("old.txt", Some("base\n"), None),
+        ("new.txt", None, Some("base\n")),
+        (
+            "removed-index.txt",
+            Some("original\n"),
+            Some("actual replacement\n"),
+        ),
+    ] {
+        let entry = entries.iter().find(|e| e.path == name).unwrap();
+        let contents = fixture
+            .git
+            .contents(&repo, entry, DiffMode::Total, &fixture.control)
+            .unwrap();
+        assert_eq!(contents.old_file.map(|f| f.contents).as_deref(), old);
+        assert_eq!(contents.new_file.map(|f| f.contents).as_deref(), new);
+        let diff = fixture
+            .git
+            .diff(&repo, entry, DiffMode::Total, &fixture.control)
+            .unwrap();
+        assert_eq!(diff.kind, DiffKind::Text);
+        if name == "removed-index.txt" {
+            assert!(diff.patch.contains("+actual replacement"));
+        }
+    }
+    fixture.commit();
+    git(fixture.root(), &["branch", "-f", "base", "HEAD"]);
+    let entry = entries
+        .iter()
+        .find(|e| e.path == "removed-index.txt")
+        .unwrap();
+    assert_eq!(
+        fixture
+            .git
+            .contents(&repo, entry, DiffMode::Total, &fixture.control)
+            .unwrap()
+            .old_file
+            .unwrap()
+            .contents,
+        "original\n"
+    );
+}

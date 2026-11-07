@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import ComparisonPicker from './components/ComparisonPicker.svelte';
   import RepositoryMenu from './components/RepositoryMenu.svelte';
   import RepositoryCleanup from './components/RepositoryCleanup.svelte';
   import ChangeTree from './components/ChangeTree.svelte';
@@ -7,7 +8,7 @@
   import Icon from './components/Icon.svelte';
   import RepoUntrackedToggle from './components/RepoUntrackedToggle.svelte';
   import RootTabs from './components/RootTabs.svelte';
-  import { addRepository, chooseRepository, chooseRoot, closeWorkspace, defaultPreferences, exitApplication, getDiff, getPreferences, getRootBadges, isDesktop, loadDiffContents, onExitRequested, openWorkspace, refreshWorkspace, savePreferences } from './lib/bridge';
+  import { addRepository, chooseRepository, chooseRoot, closeWorkspace, defaultPreferences, exitApplication, getDiff, getPreferences, getRootBadges, isDesktop, loadDiffContents, onExitRequested, openWorkspace, refreshWorkspace, savePreferences, setComparison } from './lib/bridge';
   import { canonicalizeTab, closeTab, restoreRoots, workspaceBadge } from './lib/workspace-tabs';
   import { allEntries, buildChangeTree, directoryPaths, hiddenUntrackedCount, isUntracked } from './lib/tree';
   import type { ChangeEntry, DiffContents, DiffMode, DiffResponse, Preferences, Repository, RootBadgeState, TreeView, WorkspaceEvent, WorkspaceSnapshot } from './lib/types';
@@ -21,6 +22,7 @@
   let badgeRequest = 0;
   let windowActive = $state(true);
   let mode = $state<DiffMode>('total');
+  let changingComparison = $state(false);
   let query = $state('');
   let selected = $state.raw<ChangeEntry | null>(null);
   let response = $state.raw<DiffResponse | null>(null);
@@ -46,6 +48,7 @@
   let diffTimer: ReturnType<typeof setTimeout> | undefined;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   const states = $derived(snapshot?.repositories ?? []);
+  const comparingBranch = $derived(states.some(state => !!state.repository.comparison));
   const activeRootPath = $derived(snapshot?.root ?? null);
   const treeOptions = $derived({ view: preferences.treeView, untrackedByRepo: preferences.untrackedByRepo });
   const modeTree = $derived(buildChangeTree(states, mode, '', treeOptions));
@@ -129,6 +132,21 @@
   async function setMode(next: DiffMode) {
     if (next === mode || !await leaveEditor()) return;
     mode = next;
+  }
+
+  async function changeComparison(repoId: string, reference: string | null) {
+    if (!snapshot || !await leaveEditor()) return;
+    changingComparison = true;
+    ++requestId;
+    clearTimeout(diffTimer);
+    response = null;
+    loadingDiff = false;
+    diffError = null;
+    try {
+      await setComparison(repoId, snapshot.generation, reference);
+      mode = 'total';
+    } catch (error) { showToast(String(error)); }
+    finally { changingComparison = false; }
   }
 
   async function requestDiff() {
@@ -487,6 +505,7 @@
     <div class="workspace-layout" id="workspace-panel">
       <aside class="sidebar">
         <div class="sidebar-heading"><span>CAMBIOS</span><span class="count-pill">{modeCount}</span><div class="heading-actions"><button class="icon-button small" onclick={collapseAll} aria-label="Contraer carpetas" title="Contraer carpetas"><Icon name="collapse" size={14} /></button><button class="icon-button small" onclick={browseRepository} aria-label="Agregar repositorio anidado" title="Agregar repositorio anidado"><Icon name="plus" size={16} /></button></div></div>
+        <ComparisonPicker repositories={states.map(state => state.repository)} generation={snapshot.generation} disabled={snapshot.scanning || opening || changingComparison || cleaning || !!cleanup} onChange={changeComparison} />
         <div class="search-field"><Icon name="search" size={15} /><input bind:this={searchInput} bind:value={query} aria-label="Buscar archivos o repositorios" placeholder="Buscar archivo o repositorio" spellcheck="false" />{#if query}<button class="search-clear" onclick={() => { query = ''; searchInput?.focus(); }} aria-label="Limpiar búsqueda"><Icon name="close" size={13} /></button>{:else}<kbd>⌘P</kbd>{/if}</div>
         <div class="sidebar-view-controls">
           <div class="tree-view-switch" aria-label="Organización del árbol">
@@ -508,9 +527,9 @@
             {#if selected}<span class="breadcrumb-file-icon"><Icon name="file" size={15} /></span>{#each pathParts as part, index}<span class:breadcrumb-current={index === pathParts.length - 1}>{part}</span>{#if index < pathParts.length - 1}<Icon name="chevron-right" size={11} />{/if}{/each}
             {:else}<span class="no-file-label">Seleccioná un archivo</span>{/if}
           </div>
-          <div class="diff-controls"><div class="comparison-switch" aria-label="Comparación">{#each modes as option}<button class:active={mode === option.value} aria-pressed={mode === option.value} title={option.title} onclick={() => setMode(option.value)}>{option.label}</button>{/each}</div><div class="diff-navigation"><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Cambio anterior" title="Cambio anterior · ⇧F7" onclick={() => diffView?.nextHunk(-1)}><Icon name="chevron-up" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Cambio siguiente" title="Cambio siguiente · F7" onclick={() => diffView?.nextHunk(1)}><Icon name="chevron-down" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Copiar líneas seleccionadas" title="Copiar líneas seleccionadas" onclick={copySelection}><Icon name="copy" size={15} /></button></div></div>
+          <div class="diff-controls"><div class="comparison-switch" aria-label="Comparación">{#each modes as option}<button disabled={comparingBranch && option.value !== 'total'} class:active={mode === option.value} aria-pressed={mode === option.value} title={option.title} onclick={() => setMode(option.value)}>{option.value === 'total' && comparingBranch ? 'Actuales' : option.label}</button>{/each}</div><div class="diff-navigation"><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Cambio anterior" title="Cambio anterior · ⇧F7" onclick={() => diffView?.nextHunk(-1)}><Icon name="chevron-up" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Cambio siguiente" title="Cambio siguiente · F7" onclick={() => diffView?.nextHunk(1)}><Icon name="chevron-down" size={16} /></button><button class="icon-button small" disabled={!response || response.result.kind !== 'text' || loadingDiff || editorActive} aria-label="Copiar líneas seleccionadas" title="Copiar líneas seleccionadas" onclick={copySelection}><Icon name="copy" size={15} /></button></div></div>
         </div>
-        <DiffView bind:this={diffView} {response} loading={loadingDiff} error={diffError} ignoreWhitespace={preferences.ignoreWhitespace} onIgnoreWhitespaceChange={setIgnoreWhitespace} onLoadContents={loadContents} onRefresh={() => requestDiff()} onEditingChange={editingChanged} />
+        <DiffView baseLabel={currentRepo?.comparison?.reference.replace(/^refs\/(heads|remotes)\//, '') ?? 'HEAD'} bind:this={diffView} {response} loading={loadingDiff} error={diffError} ignoreWhitespace={preferences.ignoreWhitespace} onIgnoreWhitespaceChange={setIgnoreWhitespace} onLoadContents={loadContents} onRefresh={() => requestDiff()} onEditingChange={editingChanged} />
       </main>
     </div>
     <footer class="statusbar"><div class="status-left"><span class="status-indicator" class:busy={snapshot.scanning} class:stale={staleCount > 0 || !!workspaceError}></span>{#if workspaceError}<span class="status-error" title={workspaceError}>{workspaceError}</span>{:else if snapshot.scanning}<span>Consultando {snapshot.scannedCount}{totalCount ? ` de ${totalCount}` : ''} repositorios</span>{:else if staleCount}<span title={states.filter(state => state.error).map(state => `${state.repository.relativePath}: ${state.error}`).join('\n')}>{staleCount} repositorios sin actualizar</span>{:else}<span>{states.length} repositorios<span class="status-separator">·</span>{modeCount} archivos con cambios{#if hiddenCount}<span class="status-separator">·</span>{hiddenCount} sin seguimiento ocultos{/if}</span>{/if}{#if elapsedMs !== null && !snapshot.scanning}<span class="scan-time">{elapsedMs < 1000 ? `${Math.round(elapsedMs)} ms` : `${(elapsedMs / 1000).toFixed(1)} s`}</span>{/if}</div><div class="status-right">{#if currentRepo?.branch}<span><Icon name="branch" size={12} />{currentRepo.branch}</span><span class="status-separator">·</span>{/if}<span><Icon name="split" size={12} />Vista dividida</span><span class="status-separator">·</span><span>{editorActive ? "Editando archivo actual" : "Revisión"}</span></div></footer>

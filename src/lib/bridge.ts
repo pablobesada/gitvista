@@ -119,3 +119,12 @@ export async function stashRepository(repoId: string, generation: number, token:
   if (isDesktop) return invoke('stash_repository', { repoId, generation, token, includeUntracked });
   throw new Error('La limpieza está disponible en la aplicación de escritorio. La vista previa no modifica archivos.');
 }
+
+export async function listBranches(repoId: string, generation: number): Promise<string[]> {
+  if (isDesktop) return invoke('list_branches', { repoId, generation });
+  return [];
+}
+export async function setComparison(repoId: string, generation: number, reference: string | null): Promise<void> {
+  if (isDesktop) return invoke('set_comparison', { repoId, generation, reference });
+  throw new Error('La comparación con ramas está disponible en la aplicación de escritorio.');
+}

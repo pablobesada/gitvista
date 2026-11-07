@@ -59,3 +59,12 @@ describe('workspace tabs', () => {
     expect(badgeDescription({ hasChanges: true, stale: false, error: null }, false)).toContain('última revisión');
   });
 });
+
+it('does not treat committed branch differences as uncommitted workspace changes', () => {
+  const snapshot = demoWorkspace('/fixture', 1);
+  snapshot.repositories.forEach(repo => repo.entries = repo.entries.map(entry => ({ ...entry, comparisonStatus: 'M', indexStatus: '.', worktreeStatus: '.' })));
+  expect(workspaceBadge(snapshot, null).hasChanges).toBe(false);
+  snapshot.repositories[0].entries[0].indexStatus = 'M';
+  snapshot.repositories[0].entries[0].comparisonStatus = '';
+  expect(workspaceBadge(snapshot, null).hasChanges).toBe(true);
+});

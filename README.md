@@ -12,7 +12,7 @@ Built with Rust, Tauri 2, Svelte 5 and TypeScript. Licensed under [MIT](LICENSE)
 
 - Discovers nested repositories, worktrees and submodules under one workspace root.
 - Groups changes by project folders or independent repositories, with search and per-repo untracked-file visibility.
-- Compares **HEAD → working tree**, **index → working tree**, or **HEAD → index**.
+- Compares **HEAD → working tree**, **index → working tree**, **HEAD → index**, or a selected **branch → current working files** per repository.
 - Shows changed blocks or complete files, with syntax highlighting, inline emphasis, optional word wrap/whitespace comparison and keyboard navigation.
 - Lets you explicitly edit the current working file, restore blocks into a draft, and undo before saving.
 - Cleans a selected repository through a confirmed, recoverable stash action.
@@ -60,7 +60,7 @@ open target/release/bundle/macos/GitVista.app
 
 1. Open a root folder with **⌘O**. Nested repositories appear progressively.
 2. Select **Carpetas** (folder hierarchy) or **Repositorios** (peer repos), then choose a changed file.
-3. Use **Total**, **Sin preparar** or **Preparado** to choose the comparison.
+3. Under **ARCHIVOS ACTUALES VS.**, choose **Último commit (HEAD)** or a local/known remote branch. With multiple repositories, choose the repository first. Branch comparison includes committed differences and current edits; it never checks out or fetches a branch. Return to HEAD to use **Total**, **Sin preparar** or **Preparado**. Choices last for the active root only.
 4. Choose **Cambios** for relevant blocks or **Archivo completo** for both full versions.
 
 Review queries do not modify Git's index or configuration. **Guardar** explicitly writes the current working file. **Guardar en stash y limpiar…** explicitly changes the selected repository's working tree and index after confirmation. That action can include untracked files; ignored files and nested working trees are preserved. See the [usage guide](docs/usage.md#save-changes-in-a-stash-and-clean-a-repository) before using cleanup.

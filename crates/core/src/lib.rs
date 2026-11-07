@@ -41,7 +41,16 @@ pub enum EntryKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BranchComparison {
+    pub reference: String,
+    pub oid: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Repository {
+    #[serde(default)]
+    pub comparison: Option<BranchComparison>,
     pub id: String,
     pub path: String,
     pub relative_path: String,
@@ -86,6 +95,9 @@ impl Repository {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangeEntry {
+    /// None for HEAD review; empty when identical to the selected branch.
+    #[serde(default)]
+    pub comparison_status: Option<String>,
     pub id: String,
     pub repo_id: String,
     pub path: String,

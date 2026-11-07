@@ -22,7 +22,7 @@ export function rootLabel(root: string): string {
 
 /** Root indicators use tracked entries, independent of mode, search or visibility. */
 export function workspaceBadge(snapshot: WorkspaceSnapshot, error: string | null, prior?: RootBadgeState): RootBadgeState {
-  const changed = snapshot.repositories.some(repo => repo.entries.some(entry => !isUntracked(entry)));
+  const changed = snapshot.repositories.some(repo => repo.entries.some(entry => !isUntracked(entry) && (entry.indexStatus !== '.' || entry.worktreeStatus !== '.')));
   const failure = error ?? snapshot.repositories.find(repo => repo.error)?.error ?? null;
   if (changed) return { hasChanges: true, stale: snapshot.scanning || !!failure, error: failure };
   if (snapshot.scanning) return { hasChanges: prior?.hasChanges ?? null, stale: true, error: failure };

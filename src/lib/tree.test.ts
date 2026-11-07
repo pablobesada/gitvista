@@ -146,3 +146,15 @@ describe('changed-path tree', () => {
     expect(statusLabel(entry('x', { worktreeStatus: '?' }), 'unstaged')).toBe('?');
   });
 });
+
+it('filters branch comparisons without losing the actual staged and unstaged states', () => {
+  const committed = entry('committed.txt', { indexStatus: '.', worktreeStatus: '.', comparisonStatus: 'A' });
+  const pending = entry('pending.txt', { indexStatus: 'M', worktreeStatus: 'M', comparisonStatus: '' });
+  const states = [repo('/root', '', [committed, pending])];
+  expect(allEntries(buildChangeTree(states, 'total'))).toEqual([committed]);
+  expect(allEntries(buildChangeTree(states, 'staged'))).toEqual([pending]);
+  expect(allEntries(buildChangeTree(states, 'unstaged'))).toEqual([pending]);
+  expect(statusLabel(committed, 'total')).toBe('A');
+  pending.comparisonStatus = null;
+  expect(allEntries(buildChangeTree(states, 'total'))).toEqual([committed, pending]);
+});

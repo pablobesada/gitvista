@@ -1,6 +1,6 @@
 export type DiffMode = 'total' | 'unstaged' | 'staged';
-export interface Repository { id: string; path: string; relativePath: string; relativePathKey?: string; gitDir: string; commonDir: string; branch: string; }
-export interface ChangeEntry { id: string; repoId: string; path: string; oldPath: string | null; absolutePath: string; relativePath: string; relativePathKey?: string; indexStatus: string; worktreeStatus: string; kind: 'file' | 'repository' | 'submodule'; }
+export interface Repository { comparison?: { reference: string; oid: string } | null; id: string; path: string; relativePath: string; relativePathKey?: string; gitDir: string; commonDir: string; branch: string; }
+export interface ChangeEntry { comparisonStatus?: string | null; id: string; repoId: string; path: string; oldPath: string | null; absolutePath: string; relativePath: string; relativePathKey?: string; indexStatus: string; worktreeStatus: string; kind: 'file' | 'repository' | 'submodule'; }
 export interface RepoState { repository: Repository; entries: ChangeEntry[]; error: string | null; elapsedMs: number; }
 export interface WorkspaceSnapshot { root: string; generation: number; repositories: RepoState[]; scanning: boolean; scannedCount: number; }
 export interface RootBadge { root: string; hasChanges: boolean | null; error: string | null; }

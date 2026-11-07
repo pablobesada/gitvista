@@ -213,6 +213,81 @@ impl Runtime {
         self.spawn_scan(true, None);
         Ok(snapshot)
     }
+    pub async fn branches(&self, repo_id: String, generation: u64) -> Result<Vec<String>, String> {
+        let (repo, control) = {
+            let data = self.0.data.lock().unwrap();
+            if data.generation != generation {
+                return Err("Operation cancelled".into());
+            }
+            (
+                data.repositories
+                    .get(&repo_id)
+                    .ok_or("Repositorio no disponible")?
+                    .repository
+                    .clone(),
+                data.control.clone(),
+            )
+        };
+        let permit = self
+            .0
+            .background
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?;
+        let backend = self.0.backend.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            control.check()?;
+            backend.branches(&repo, &control)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if self.0.data.lock().unwrap().generation != generation {
+            return Err("Operation cancelled".into());
+        }
+        Ok(result)
+    }
+
+    pub fn set_comparison(
+        &self,
+        repo_id: String,
+        generation: u64,
+        reference: Option<String>,
+    ) -> Result<(), String> {
+        let (root, generation, control) = {
+            let mut data = self.0.data.lock().unwrap();
+            if self.editor_active() {
+                return Err("Terminá la edición antes de cambiar la comparación.".into());
+            }
+            if data.generation != generation || data.scanning {
+                return Err("Esperá a que termine la actualización.".into());
+            }
+            let root = data.root.clone().ok_or("No hay proyecto abierto")?;
+            let state = data
+                .repositories
+                .get_mut(&repo_id)
+                .ok_or("Repositorio no disponible")?;
+            state.repository.comparison = reference.map(|reference| BranchComparison {
+                reference,
+                oid: String::new(),
+            });
+            state.entries.clear();
+            state.error = None;
+            data.control.cancel();
+            data.watcher = None;
+            data.control = Cancellation::new();
+            data.generation += 1;
+            data.scan_running = false;
+            (root, data.generation, data.control.clone())
+        };
+        self.0.diff.lock().unwrap().1.cancel();
+        self.0.cache.lock().unwrap().clear();
+        self.install_watchers(generation, root, control);
+        self.spawn_scan(true, None);
+        Ok(())
+    }
+
     pub async fn refresh(&self, force: bool) -> Result<(), String> {
         {
             let data = self.0.data.lock().unwrap();
@@ -407,6 +482,19 @@ impl Runtime {
             if let Some(ids) = affected {
                 repositories.retain(|r| ids.contains(&r.id));
             }
+            // Discovery refreshes metadata but comparison choices belong only to this active root.
+            {
+                let data = runtime.0.data.lock().unwrap();
+                if data.generation != generation {
+                    return;
+                }
+                for repo in &mut repositories {
+                    repo.comparison = data
+                        .repositories
+                        .get(&repo.id)
+                        .and_then(|state| state.repository.comparison.clone());
+                }
+            }
             repositories.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
             let total = repositories.len();
             let mut tasks = tokio::task::JoinSet::new();
@@ -421,13 +509,24 @@ impl Runtime {
                 tasks.spawn(async move {
                     let permit = semaphore.acquire_owned().await.unwrap();
                     let started = Instant::now();
-                    let repo = repository.clone();
+                    let mut repo = repository.clone();
                     let result = tokio::task::spawn_blocking(move || {
                         let _permit = permit;
-                        backend.status(&repo, &status_root, &token)
+                        let result = (|| {
+                            if let Some(base) = &repo.comparison {
+                                repo.comparison = Some(backend.resolve_comparison(
+                                    &repo,
+                                    &base.reference,
+                                    &token,
+                                )?);
+                            }
+                            backend.comparison_status(&repo, &status_root, &token)
+                        })();
+                        (repo, result)
                     })
                     .await;
-                    let result = result.unwrap_or_else(|e| Err(e.to_string()));
+                    let (repository, result) =
+                        result.unwrap_or_else(|e| (repository, Err(e.to_string())));
                     (repository, result, started.elapsed().as_millis() as u64)
                 });
             }
@@ -667,6 +766,11 @@ impl Runtime {
         let data = self.0.data.lock().unwrap();
         for state in data.repositories.values() {
             if let Some(entry) = state.entries.iter().find(|e| e.id == entry_id) {
+                if state.repository.comparison.is_some() && state.error.is_some() {
+                    return Err(
+                        "La comparación está desactualizada; actualizá el repositorio.".into(),
+                    );
+                }
                 return Ok((
                     state.repository.clone(),
                     entry.clone(),

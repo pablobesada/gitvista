@@ -41,6 +41,23 @@ async fn add_repository(path: String, runtime: State<'_, Runtime>) -> Result<(),
     runtime.add_repository(path).await
 }
 #[tauri::command]
+async fn list_branches(
+    repo_id: String,
+    generation: u64,
+    runtime: State<'_, Runtime>,
+) -> Result<Vec<String>, String> {
+    runtime.branches(repo_id, generation).await
+}
+#[tauri::command]
+fn set_comparison(
+    repo_id: String,
+    generation: u64,
+    reference: Option<String>,
+    runtime: State<'_, Runtime>,
+) -> Result<(), String> {
+    runtime.set_comparison(repo_id, generation, reference)
+}
+#[tauri::command]
 async fn get_diff(
     entry_id: String,
     mode: DiffMode,
@@ -175,6 +192,8 @@ pub fn run() {
             refresh_workspace,
             get_root_badges,
             add_repository,
+            list_branches,
+            set_comparison,
             get_diff,
             load_diff_contents,
             save_working_file,

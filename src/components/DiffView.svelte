@@ -16,8 +16,9 @@
   import type { TextEdit } from '@pierre/diffs/edit';
   import { changeOverview, overviewThumb } from '../lib/change-overview';
 
-  let { response, loading = false, error = null, ignoreWhitespace = false, onIgnoreWhitespaceChange, onLoadContents, onRefresh, onEditingChange }: {
+  let { response, baseLabel = 'HEAD', loading = false, error = null, ignoreWhitespace = false, onIgnoreWhitespaceChange, onLoadContents, onRefresh, onEditingChange }: {
     response: DiffResponse | null;
+    baseLabel?: string;
     loading?: boolean;
     error?: string | null;
     ignoreWhitespace?: boolean;
@@ -706,7 +707,7 @@
     };
   });
 
-  const leftLabel = $derived(response?.result.mode === 'unstaged' ? 'Índice' : 'HEAD');
+  const leftLabel = $derived(response?.result.mode === 'unstaged' ? 'Índice' : baseLabel);
   const rightLabel = $derived(response?.result.mode === 'staged' ? 'Índice' : 'Actual');
   const filteredEmpty = $derived(whitespaceFiltered && hunkCount === 0 && scope === 'changes');
   const textAvailable = $derived(!filteredEmpty && response != null && (response.result.kind === 'text' || (scope === 'full' && fullReady && ['empty', 'metadata'].includes(response.result.kind))));

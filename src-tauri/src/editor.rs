@@ -205,6 +205,7 @@ mod native {
         fn fixture() -> (tempfile::TempDir, Repository, ChangeEntry) {
             let dir = tempfile::tempdir().unwrap();
             let repo = Repository {
+                comparison: None,
                 id: "repo".into(),
                 path: dir.path().to_string_lossy().into(),
                 relative_path: ".".into(),
@@ -217,6 +218,7 @@ mod native {
                 raw_common_dir: PathBuf::new(),
             };
             let entry = ChangeEntry {
+                comparison_status: None,
                 id: "file".into(),
                 repo_id: "repo".into(),
                 path: "á ' file.txt".into(),

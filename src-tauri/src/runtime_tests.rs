@@ -829,3 +829,79 @@ async fn repository_cleanup_uses_native_id_guards_generation_and_editor_then_ref
         "baseline\n"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn branch_selection_refreshes_tree_guards_drafts_and_resets_on_root_switch() {
+    let fixture = TempDir::new().unwrap();
+    let root = repository(&fixture.path().join("repo"));
+    git(&root, &["branch", "base"]);
+    git(&root, &["add", "change.txt"]);
+    git(&root, &["commit", "-qm", "second"]);
+    let runtime = Runtime::new(fixture.path().join("preferences.json"));
+    let (channel, mut events) = Events::channel();
+    runtime
+        .open(root.to_string_lossy().into(), channel)
+        .await
+        .unwrap();
+    events.done().await;
+    let id = events.repository(&root).repository.id.clone();
+    let generation = events.snapshot.as_ref().unwrap().generation;
+    assert!(events.repository(&root).entries.is_empty());
+    assert!(runtime
+        .branches(id.clone(), generation)
+        .await
+        .unwrap()
+        .contains(&"refs/heads/base".into()));
+    runtime.set_editor_active(true);
+    assert!(runtime
+        .set_comparison(id.clone(), generation, Some("refs/heads/base".into()))
+        .is_err());
+    runtime.set_editor_active(false);
+    runtime
+        .set_comparison(id.clone(), generation, Some("refs/heads/base".into()))
+        .unwrap();
+    events.wait_for("new comparison", |event| matches!(event, WorkspaceEvent::Done { generation: next, .. } if *next > generation)).await;
+    let entry = events.repository(&root).entries[0].clone();
+    let diff = runtime
+        .diff(entry.id.clone(), DiffMode::Total, 1)
+        .await
+        .unwrap();
+    assert!(diff.result.patch.contains("-baseline"));
+    assert!(diff.result.patch.contains("+initial change"));
+    assert!(runtime
+        .set_comparison(id.clone(), generation, None)
+        .is_err());
+    // Full rediscovery must retain the active repository's choice.
+    runtime.refresh(true).await.unwrap();
+    events.done().await;
+    assert_eq!(
+        events
+            .repository(&root)
+            .repository
+            .comparison
+            .as_ref()
+            .unwrap()
+            .reference,
+        "refs/heads/base"
+    );
+    // Missing references are stale coverage, never a clean result or HEAD fallback.
+    git(&root, &["branch", "-D", "base"]);
+    runtime.refresh(true).await.unwrap();
+    events.done().await;
+    assert!(events.repository(&root).error.is_some());
+    assert!(!events.repository(&root).entries.is_empty());
+    assert!(runtime.diff(entry.id, DiffMode::Total, 2).await.is_err());
+    let generation = events.snapshot.as_ref().unwrap().generation;
+    runtime.set_comparison(id, generation, None).unwrap();
+    events.wait_for("HEAD comparison", |event| matches!(event, WorkspaceEvent::Done { generation: next, .. } if *next > generation)).await;
+    assert!(events.repository(&root).entries.is_empty());
+    runtime.close().unwrap();
+    let (channel, mut reopened) = Events::channel();
+    runtime
+        .open(root.to_string_lossy().into(), channel)
+        .await
+        .unwrap();
+    reopened.done().await;
+    assert!(reopened.repository(&root).repository.comparison.is_none());
+    runtime.close().unwrap();
+}

@@ -299,6 +299,7 @@ impl CliGit {
             return Err("Invalid Git HEAD".into());
         };
         Ok(Repository {
+            comparison: None,
             id: opaque_id(&native_bytes(raw_path.as_os_str())),
             path: display_path(&raw_path),
             relative_path: repository_relative_path(&raw_path, root),
@@ -310,6 +311,145 @@ impl CliGit {
             raw_git_dir,
             raw_common_dir,
         })
+    }
+
+    /// Local and already-known remote branches; never fetch or checkout.
+    pub fn branches(
+        &self,
+        repo: &Repository,
+        control: &Cancellation,
+    ) -> Result<Vec<String>, String> {
+        let bytes = self.checked(
+            repo.directory(),
+            args(&[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/",
+                "refs/remotes/",
+            ]),
+            QUERY_LIMIT,
+            control,
+        )?;
+        let text = String::from_utf8(bytes).map_err(|_| "Branch names are not UTF-8")?;
+        Ok(text
+            .lines()
+            .filter(|name| !name.ends_with("/HEAD"))
+            .map(str::to_owned)
+            .collect())
+    }
+
+    pub fn resolve_comparison(
+        &self,
+        repo: &Repository,
+        reference: &str,
+        control: &Cancellation,
+    ) -> Result<gitvista_core::BranchComparison, String> {
+        if !self
+            .branches(repo, control)?
+            .iter()
+            .any(|name| name == reference)
+        {
+            return Err("La rama seleccionada ya no existe en este repositorio.".into());
+        }
+        let bytes = self.checked(
+            repo.directory(),
+            args(&[
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{reference}^{{commit}}"),
+            ]),
+            QUERY_LIMIT,
+            control,
+        )?;
+        let oid = String::from_utf8(bytes)
+            .map_err(|_| "Invalid commit ID")?
+            .trim()
+            .to_owned();
+        if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("Invalid commit ID".into());
+        }
+        Ok(gitvista_core::BranchComparison {
+            reference: reference.into(),
+            oid,
+        })
+    }
+
+    pub fn comparison_status(
+        &self,
+        repo: &Repository,
+        root: &Path,
+        control: &Cancellation,
+    ) -> Result<Vec<ChangeEntry>, String> {
+        let root = fs::canonicalize(root)
+            .map_err(|error| format!("Cannot open workspace root: {error}"))?;
+        let mut entries = self.status(repo, &root, control)?;
+        let Some(base) = &repo.comparison else {
+            return Ok(entries);
+        };
+        let mut arguments = self.filter_overrides(repo, control)?;
+        arguments.extend(args(&[
+            "diff",
+            "--raw",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=dirty",
+            &base.oid,
+            "--",
+        ]));
+        if root != repo.directory() {
+            if let Ok(scope) = root.strip_prefix(repo.directory()) {
+                arguments.push(scope.as_os_str().to_owned());
+            }
+        }
+        let bytes = self.checked(repo.directory(), arguments, STATUS_LIMIT, control)?;
+        // Retain the true index/worktree states, including net-empty pending changes.
+        for entry in &mut entries {
+            entry.comparison_status = Some(if entry.index_status == "?" { "?" } else { "" }.into());
+        }
+        let mut positions: HashMap<PathBuf, usize> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| (entry.raw_path.clone(), i))
+            .collect();
+        let mut records = bytes.split(|b| *b == 0);
+        while let Some(header) = records.next() {
+            control.check()?;
+            if header.is_empty() {
+                continue;
+            }
+            let fields: Vec<_> = header.split(|b| *b == b' ').collect();
+            if fields.len() != 5 || !fields[0].starts_with(b":") {
+                return Err("Invalid Git raw diff".into());
+            }
+            let path = records.next().ok_or("Missing Git diff path")?;
+            let submodule = fields[0] == b":160000" || fields[1] == b"160000";
+            let mut record = format!(
+                "1 .. {} 0 0 0 0 0 ",
+                if submodule { "S..." } else { "N..." }
+            )
+            .into_bytes();
+            record.extend_from_slice(path);
+            record.push(0);
+            for mut entry in parse_status(&record, repo, &root, control)? {
+                let status =
+                    String::from_utf8(fields[4].to_vec()).map_err(|_| "Invalid diff status")?;
+                if let Some(existing) = positions
+                    .get(&entry.raw_path)
+                    .map(|index| &mut entries[*index])
+                {
+                    existing.comparison_status = Some(status);
+                } else {
+                    entry.comparison_status = Some(status);
+                    positions.insert(entry.raw_path.clone(), entries.len());
+                    entries.push(entry);
+                }
+            }
+        }
+        entries.sort_by(|a, b| a.raw_path.cmp(&b.raw_path));
+        Ok(entries)
     }
 
     pub fn status(
@@ -347,6 +487,9 @@ impl CliGit {
     ) -> Result<DiffResult, String> {
         control.check()?;
         validate_entry(repo, entry)?;
+        if repo.comparison.is_some() && mode != DiffMode::Total {
+            return Err("La comparación con una rama usa los archivos actuales.".into());
+        }
         let mut result = DiffResult {
             entry_id: entry.id.clone(),
             repo_id: repo.id.clone(),
@@ -354,7 +497,11 @@ impl CliGit {
             patch: String::new(),
             kind: DiffKind::Empty,
             message: None,
-            old_path: entry.old_path.clone().or_else(|| Some(entry.path.clone())),
+            old_path: if repo.comparison.is_some() {
+                Some(entry.path.clone())
+            } else {
+                entry.old_path.clone().or_else(|| Some(entry.path.clone()))
+            },
             new_path: entry.path.clone(),
         };
         if entry.kind != EntryKind::File {
@@ -371,7 +518,7 @@ impl CliGit {
                 ]);
                 match mode {
                     DiffMode::Total if self.has_head(repo, control)? => {
-                        arguments.push("HEAD".into())
+                        arguments.push(comparison_base(repo).into())
                     }
                     DiffMode::Total => {
                         // Git synthesizes its own empty tree for unborn HEADs.
@@ -390,7 +537,7 @@ impl CliGit {
                 }
                 arguments.push("--".into());
                 arguments.push(entry.file_path().as_os_str().to_owned());
-                if mode != DiffMode::Unstaged {
+                if mode != DiffMode::Unstaged && repo.comparison.is_none() {
                     if let Some(old) = entry.old_file_path() {
                         arguments.push(old.as_os_str().to_owned());
                     }
@@ -467,7 +614,7 @@ impl CliGit {
                     if !self.has_head(repo, control)? {
                         return Ok(result);
                     }
-                    arguments.push("HEAD".into());
+                    arguments.push(comparison_base(repo).into());
                 }
                 DiffMode::Staged => {
                     arguments.push("--cached".into());
@@ -476,7 +623,7 @@ impl CliGit {
             }
             arguments.push("--".into());
             arguments.push(entry.file_path().as_os_str().to_owned());
-            if mode != DiffMode::Unstaged {
+            if mode != DiffMode::Unstaged && repo.comparison.is_none() {
                 if let Some(old_path) = entry.old_file_path() {
                     if old_path != entry.file_path() {
                         arguments.push(old_path.as_os_str().to_owned());
@@ -507,9 +654,11 @@ impl CliGit {
         // comparing its known old/new sides directly rather than displaying two
         // independent added/deleted files.
         let removed_from_index_but_present = mode == DiffMode::Total
-            && entry.index_status == "D"
+            && (entry.index_status == "D"
+                || (repo.comparison.is_some() && entry.index_status == "?"))
             && matches!((&sides.0, &sides.1), (Side::Head(_), Side::Working(_)));
-        let split_rename = entry.old_file_path().is_some()
+        let split_rename = repo.comparison.is_none()
+            && entry.old_file_path().is_some()
             && mode != DiffMode::Unstaged
             && patch_bytes
                 .split(|byte| *byte == b'\n')
@@ -573,6 +722,9 @@ impl CliGit {
     ) -> Result<DiffContents, String> {
         control.check()?;
         validate_entry(repo, entry)?;
+        if repo.comparison.is_some() && mode != DiffMode::Total {
+            return Err("La comparación con una rama usa los archivos actuales.".into());
+        }
         if entry.kind != EntryKind::File || is_conflict(entry) {
             return Err(
                 "Full content is unavailable for repositories, submodules, or unresolved conflicts"
@@ -583,7 +735,7 @@ impl CliGit {
             return Err(message);
         }
         let (old, new) = self.sides(repo, entry, mode, control)?;
-        let old_name = if mode == DiffMode::Unstaged {
+        let old_name = if mode == DiffMode::Unstaged || repo.comparison.is_some() {
             entry.file_path()
         } else {
             entry.old_file_path().unwrap_or(entry.file_path())
@@ -597,6 +749,9 @@ impl CliGit {
     }
 
     fn has_head(&self, repo: &Repository, control: &Cancellation) -> Result<bool, String> {
+        if repo.comparison.is_some() {
+            return Ok(true);
+        }
         self.run(
             repo.directory(),
             args(&["rev-parse", "--verify", "--quiet", "HEAD"]),
@@ -619,12 +774,34 @@ impl CliGit {
             .old_file_path()
             .unwrap_or(entry.file_path())
             .to_path_buf();
+        let old_path = if repo.comparison.is_some() {
+            new_path.clone()
+        } else {
+            old_path
+        };
         let in_index = entry.index_status != "?" && entry.index_status != "D";
         let in_head = entry.index_status != "?"
             && entry.index_status != "A"
             && !(entry.index_status == "." && entry.worktree_status == "A")
             && self.has_head(repo, control)?;
-        let working = if entry.worktree_status == "D" {
+        let in_head = if let Some(base) = &repo.comparison {
+            let bytes = self.checked(
+                repo.directory(),
+                vec![
+                    "ls-tree".into(),
+                    "-z".into(),
+                    base.oid.clone().into(),
+                    "--".into(),
+                    new_path.as_os_str().to_owned(),
+                ],
+                QUERY_LIMIT,
+                control,
+            )?;
+            !bytes.is_empty()
+        } else {
+            in_head
+        };
+        let working = if entry.worktree_status == "D" && repo.comparison.is_none() {
             Side::Empty
         } else {
             match fs::symlink_metadata(repo.directory().join(&new_path)) {
@@ -693,7 +870,7 @@ impl CliGit {
             Side::Head(_) | Side::Index(_) => {
                 let output = self.checked(
                     repo.directory(),
-                    vec!["cat-file".into(), "-s".into(), blob_spec(side)],
+                    vec!["cat-file".into(), "-s".into(), blob_spec(repo, side)],
                     QUERY_LIMIT,
                     control,
                 )?;
@@ -743,7 +920,7 @@ impl CliGit {
             Side::Empty => Ok(Vec::new()),
             Side::Head(_) | Side::Index(_) => self.checked(
                 repo.directory(),
-                vec!["cat-file".into(), "blob".into(), blob_spec(side)],
+                vec!["cat-file".into(), "blob".into(), blob_spec(repo, side)],
                 CONTENT_LIMIT_BYTES,
                 control,
             ),
@@ -791,7 +968,14 @@ impl CliGit {
         if !output.status.success() && output.status.code() != Some(1) {
             return Err(ProcessError::Io(output.error_message()));
         }
-        let old_name = quote_patch_path(entry.old_file_path().unwrap_or(entry.file_path()), b"a/");
+        let old_name = quote_patch_path(
+            if repo.comparison.is_some() {
+                entry.file_path()
+            } else {
+                entry.old_file_path().unwrap_or(entry.file_path())
+            },
+            b"a/",
+        );
         let new_name = quote_patch_path(entry.file_path(), b"b/");
         let mut result = Vec::with_capacity(output.stdout.len());
         let mut in_hunk = false;
@@ -1101,6 +1285,7 @@ fn unavailable_repository(directory: &Path, root: &Path, error: &str) -> Reposit
     let raw_git_dir = directory.join(".git");
     let raw_common_dir = raw_git_dir.clone();
     Repository {
+        comparison: None,
         id: opaque_id(&native_bytes(directory.as_os_str())),
         path: display_path(directory),
         relative_path: repository_relative_path(directory, root),
@@ -1151,6 +1336,12 @@ impl GitBackend for CliGit {
     }
 }
 
+fn comparison_base(repo: &Repository) -> &str {
+    repo.comparison
+        .as_ref()
+        .map_or("HEAD", |base| base.oid.as_str())
+}
+
 #[derive(Debug)]
 enum Side {
     Empty,
@@ -1159,13 +1350,13 @@ enum Side {
     Working(PathBuf),
 }
 
-fn blob_spec(side: &Side) -> OsString {
+fn blob_spec(repo: &Repository, side: &Side) -> OsString {
     let (prefix, path) = match side {
-        Side::Head(path) => ("HEAD:", path),
-        Side::Index(path) => (":", path),
+        Side::Head(path) => (comparison_base(repo), path),
+        Side::Index(path) => ("", path),
         _ => unreachable!("blob spec only exists for Git objects"),
     };
-    let mut spec = OsString::from(prefix);
+    let mut spec = OsString::from(format!("{prefix}:"));
     spec.push(path.as_os_str());
     spec
 }
@@ -1243,6 +1434,7 @@ fn parse_status(
         identity.push(0);
         identity.extend_from_slice(path);
         entries.push(ChangeEntry {
+            comparison_status: None,
             id: opaque_id(&identity),
             repo_id: repo.id.clone(),
             path: display_path(&raw_path),
@@ -1419,6 +1611,7 @@ mod tests {
     fn non_utf8_paths_retain_the_original_bytes_and_unique_ids() {
         use std::os::unix::ffi::OsStrExt;
         let repo = Repository {
+            comparison: None,
             id: "test".into(),
             path: "/tmp/example".into(),
             relative_path: "example".into(),
